@@ -508,3 +508,72 @@ describe("tool_call cwd protection (injected guard deps and select)", () => {
     assert.deepEqual(executedTasks, []);
   });
 });
+
+describe("cross-phase regression (capabilities compose)", () => {
+  it("published session id flows from session_start into tool_call service resolution", async () => {
+    const env: SubagentEnv = {};
+    const guard = createGuardDepsStub({ check: () => ({ ok: true, state: "ask" }) });
+    const pi = createStubPi();
+    createSubagentPermissionCompatExtension(pi.api, {
+      env,
+      guardDeps: guard,
+      select: contextSelect,
+    });
+    const { ctx } = createToolCallContext({ sessionId: "sess-regression-1", select: () => ALLOW_ONCE_OPTION });
+
+    fireSessionStart(pi, ctx);
+    assert.equal(env[PARENT_SESSION_ENV_VAR], "sess-regression-1");
+
+    await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: "../a" } });
+    assert.deepEqual(guard.resolveCalls, ["sess-regression-1"]);
+  });
+
+  it("after shutdown and a new session, tool_call resolves the new session id and env is re-published", async () => {
+    const env: SubagentEnv = {};
+    const guard = createGuardDepsStub();
+    const pi = createStubPi();
+    createSubagentPermissionCompatExtension(pi.api, {
+      env,
+      guardDeps: guard,
+      select: contextSelect,
+    });
+    const first = createToolCallContext({ sessionId: "sess-before-reload" });
+    const second = createToolCallContext({ sessionId: "sess-after-reload" });
+
+    fireSessionStart(pi, first.ctx);
+    await fireToolCall(pi, first.ctx, { toolName: "subagent", input: { cwd: "../a" } });
+    assert.deepEqual(guard.resolveCalls, ["sess-before-reload"]);
+
+    fireSessionShutdown(pi, "reload");
+    assert.equal(env[PARENT_SESSION_ENV_VAR], undefined);
+
+    fireSessionStart(pi, second.ctx);
+    assert.equal(env[PARENT_SESSION_ENV_VAR], "sess-after-reload");
+    await fireToolCall(pi, second.ctx, { toolName: "subagent", input: { cwd: "../b" } });
+    assert.deepEqual(guard.resolveCalls, ["sess-before-reload", "sess-after-reload"]);
+  });
+
+  it("ask degradation holds when the service becomes unavailable between calls", async () => {
+    const env: SubagentEnv = {};
+    const guardOptions: GuardStubOptions = {};
+    const guard = createGuardDepsStub(guardOptions);
+    const pi = createStubPi();
+    createSubagentPermissionCompatExtension(pi.api, {
+      env,
+      guardDeps: guard,
+      select: contextSelect,
+    });
+    const { ctx, selectCalls } = createToolCallContext({ sessionId: "sess-degrade", select: () => DENY_OPTION });
+
+    fireSessionStart(pi, ctx);
+    await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: "../a" } });
+    assert.deepEqual(selectCalls, []); // allow: no prompt
+
+    // Query failure degrades the item to ask; the user then denies it.
+    guardOptions.check = () => ({ ok: false, reason: "permission query failed: boom" });
+    const result = (await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: "../b" } })) as ToolCallEventResult;
+    assert.equal(result.block, true);
+    assert.match(result.reason ?? "", /not approved/);
+    assert.equal(selectCalls.length, 1, "the degraded ask must prompt once");
+  });
+});
