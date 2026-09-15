@@ -1,7 +1,7 @@
 {
   "name": "pi-subagent-permission-compat",
   "version": "0.1.0",
-  "description": "Subagent permission gating enhancement for any subagent extension with @gotgenes/pi-permission-system",
+  "description": "Parent-session compatibility and cwd permission checks for Pi subagent tools.",
   "keywords": [
     "pi-package",
     "pi",
@@ -14,6 +14,11 @@
   "scripts": {
     "test": "node --import tsx --test",
     "typecheck": "tsc --noEmit"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
