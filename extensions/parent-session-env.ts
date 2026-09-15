@@ -30,7 +30,7 @@ export const THIRD_PARTY_SUBAGENT_ENV_HINTS: readonly string[] = [
   "PI_SUBAGENT_ID",
   "PI_SUBAGENT_SESSION",
   "PI_SUBAGENT_ACTIVITY_FILE",
-] as const;
+];
 
 /**
  * Environment variables that already carry a parent-session declaration for
@@ -43,7 +43,7 @@ export const SUBAGENT_PARENT_SESSION_ENV_CANDIDATES: readonly string[] = [
   "PI_AGENT_ROUTER_PARENT_SESSION_ID",
   // Shared convention for CLI-based subagent extensions
   "PI_SUBAGENT_PARENT_SESSION",
-] as const;
+];
 
 /** The single environment variable this extension owns and may write. */
 export const PARENT_SESSION_ENV_VAR = "PI_SUBAGENT_PARENT_SESSION";
