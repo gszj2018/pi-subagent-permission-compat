@@ -76,6 +76,8 @@ function isNonEmptyString(value: unknown): value is string {
  *   exists, once per tool call, keyed by the current session ID.
  * - Each query failure degrades that item to `ask`; remaining items still run.
  * - A `deny` never short-circuits: remaining items are still evaluated.
+ * - A scan error floors the aggregate at `ask`: an incompletely scanned call
+ *   must never be treated as a clean allow.
  */
 export async function evaluateCwdOccurrences(
   input: unknown,
@@ -122,6 +124,10 @@ export async function evaluateCwdOccurrences(
     if (evaluation.state === "ask") {
       aggregate = "ask";
     }
+  }
+  // Fail-closed floor: an incomplete scan must never read as a clean allow.
+  if (scan.error !== undefined && aggregate === "allow") {
+    aggregate = "ask";
   }
 
   return { evaluations, aggregate, scanError: scan.error };

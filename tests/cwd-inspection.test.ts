@@ -224,7 +224,10 @@ describe("cwd collection", () => {
   });
 
   it("reports an error when a member cannot be read (hostile getter)", () => {
+    // The safe branch is inserted first so the scan collects it before the
+    // hostile getter aborts the traversal (Object.keys order = insertion).
     const input: Record<string, unknown> = {};
+    input["before"] = { cwd: "../ok" };
     Object.defineProperty(input, "danger", {
       enumerable: true,
       configurable: true,
@@ -232,7 +235,6 @@ describe("cwd collection", () => {
         throw new Error("getter exploded");
       },
     });
-    input["before"] = { cwd: "../ok" };
     const result = collectCwdOccurrences(input);
     assert.ok(result.error, "a scan error must be reported");
     assert.match(result.error.message, /danger/);

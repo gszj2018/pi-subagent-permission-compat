@@ -258,8 +258,11 @@ describe("safety invariants", () => {
   });
 
   it("blocks on scan errors: outcome carries scanError while safe parts still evaluate", async () => {
+    // The safe branch is inserted first so it is collected before the hostile
+    // getter aborts the traversal (Object.keys order = insertion).
     const deps = createDepsStub();
     const input: Record<string, unknown> = {};
+    input["before"] = { cwd: "../ok" };
     Object.defineProperty(input, "danger", {
       enumerable: true,
       configurable: true,
@@ -267,7 +270,6 @@ describe("safety invariants", () => {
         throw new Error("scan exploded");
       },
     });
-    input["before"] = { cwd: "../ok" };
 
     const outcome = await evaluateCwdOccurrences(input, SESSION_ID, deps);
 
@@ -275,6 +277,8 @@ describe("safety invariants", () => {
     assert.match(outcome.scanError.message, /scan exploded/);
     assert.equal(outcome.evaluations.length, 1);
     assert.equal(outcome.evaluations[0]?.state, "allow");
+    // Fail-closed floor: the incompletely scanned call is at least ask.
+    assert.equal(outcome.aggregate, "ask");
   });
 
   it("keeps the default dependency set functional", async () => {
