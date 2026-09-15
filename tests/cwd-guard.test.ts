@@ -1,11 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  createDefaultCwdGuardDeps,
-  evaluateCwdOccurrences,
-  type CwdGuardDeps,
-} from "../extensions/cwd-guard.ts";
+import { createDefaultCwdGuardDeps, evaluateCwdOccurrences, type CwdGuardDeps, } from "../extensions/cwd-guard.ts";
 import {
   defaultPermissionModuleImporter,
   type ExternalDirectoryCheck,
@@ -34,12 +30,11 @@ function createDepsStub(options: {
       resolveCalls.push(sessionId);
       return options.resolution ?? { ok: true, service: allowAllService };
     },
-    checkService: (service, rawCwd) => {
+    checkService: (_service, rawCwd) => {
       checkCalls.push(rawCwd);
-      const result: ExternalDirectoryCheck = options.check
+      return options.check
         ? options.check(rawCwd, checkIndex++)
         : { ok: true, state: "allow" };
-      return result;
     },
   };
 }

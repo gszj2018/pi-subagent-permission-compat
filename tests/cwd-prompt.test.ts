@@ -9,7 +9,6 @@ import {
   formatCwdEvaluation,
   formatCwdValue,
   promptCwdApproval,
-  type CwdPromptContext,
   type CwdSelect,
 } from "../extensions/cwd-prompt.ts";
 
@@ -31,7 +30,7 @@ function selectStub(
     calls,
     select: async (title, options, opts) => {
       calls.push({ title, options, signal: opts?.signal });
-      return await Promise.resolve(implementation(title, options));
+      return implementation(title, options);
     },
   };
 }

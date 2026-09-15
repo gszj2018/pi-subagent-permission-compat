@@ -141,7 +141,7 @@ function createToolCallContext(options: {
         if (options.selectThrows) {
           throw options.selectThrows;
         }
-        return await Promise.resolve(options.select?.(title, optionList));
+        return options.select?.(title, optionList);
       },
       notify: () => undefined,
     } as unknown as ExtensionContext["ui"],
@@ -373,7 +373,7 @@ describe("tool_call cwd protection (injected guard deps and select)", () => {
 
       assert.equal(result.block, true, name);
       assert.match(result.reason ?? "", expectedFragment);
-      assert.match(result.reason ?? "", /^\[pi-subagent-permission-compat\]/);
+      assert.match(result.reason ?? "", /^\[pi-subagent-permission-compat]/);
     }
   });
 
