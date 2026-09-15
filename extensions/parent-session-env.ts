@@ -30,6 +30,8 @@ export const THIRD_PARTY_SUBAGENT_ENV_HINTS: readonly string[] = [
   "PI_SUBAGENT_ID",
   "PI_SUBAGENT_SESSION",
   "PI_SUBAGENT_ACTIVITY_FILE",
+  // HamdiMaz/pi-sub-agent
+  "PI_SUB_AGENT_DEPTH",
 ];
 
 /**
