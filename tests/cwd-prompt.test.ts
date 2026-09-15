@@ -128,11 +128,20 @@ describe("promptCwdApproval", () => {
   });
 
   it("approves only for the exact Allow once response", async () => {
-    for (const response of ["Allow once ", " allow once", "ALLOW ONCE", "yes", "", "Allow", DENY_OPTION]) {
+    // Near-misses are unknown responses, not user denials; both block.
+    for (const response of ["Allow once ", " allow once", "ALLOW ONCE", "yes", "", "Allow"]) {
       const stub = selectStub(() => response);
       const outcome = await promptCwdApproval({ select: stub.select }, { ...CONTEXT_BASE, signal: undefined });
-      assert.deepEqual(outcome, { approved: false, reason: "denied" }, JSON.stringify(response));
+      assert.deepEqual(
+        outcome,
+        { approved: false, reason: "unknown-response", detail: JSON.stringify(response) },
+        JSON.stringify(response),
+      );
     }
+
+    const stub = selectStub(() => DENY_OPTION);
+    const outcome = await promptCwdApproval({ select: stub.select }, { ...CONTEXT_BASE, signal: undefined });
+    assert.deepEqual(outcome, { approved: false, reason: "denied" });
   });
 
   it("treats undefined (cancel) and unknown responses as blocking", async () => {
@@ -145,7 +154,7 @@ describe("promptCwdApproval", () => {
     const unknown = selectStub(() => "allow_once");
     assert.deepEqual(
       await promptCwdApproval({ select: unknown.select }, { ...CONTEXT_BASE, signal: undefined }),
-      { approved: false, reason: "unknown-response" },
+      { approved: false, reason: "unknown-response", detail: '"allow_once"' },
     );
   });
 

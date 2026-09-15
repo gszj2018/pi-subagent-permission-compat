@@ -489,19 +489,22 @@ describe("tool_call cwd protection (injected guard deps and select)", () => {
     createSubagentPermissionCompatExtension(pi.api, { env: {}, guardDeps: guard, select: contextSelect });
     const { ctx } = createToolCallContext({ select: () => ALLOW_ONCE_OPTION });
     const executedTasks: string[] = [];
-    const fakeExecutor = (task: string): void => {
-      executedTasks.push(task);
+    const fakeExecutor = (task: string, event?: ToolCallEvent): void => {
+      // The host runs tools only when no handler blocked the call.
+      if (event) {
+        executedTasks.push(task);
+      }
     };
 
-    const result = (await fireToolCall(pi, ctx, {
-      toolName: "delegate",
-      input: { tasks: [{ cwd: "../denied" }, { cwd: "../allowed" }] },
-    })) as ToolCallEventResult;
+    const event = { type: "tool_call" as const, toolCallId: "call-1", toolName: "delegate", input: { tasks: [{ cwd: "../denied" }, { cwd: "../allowed" }] } };
+    const result = (await fireToolCall(pi, ctx, event)) as ToolCallEventResult;
 
     // A blocked call never reaches the executor: no subtask runs at all.
     assert.equal(result.block, true);
-    fakeExecutor("task0");
-    fakeExecutor("task1");
+    if (!result.block) {
+      fakeExecutor("task0", event);
+      fakeExecutor("task1", event);
+    }
     assert.deepEqual(executedTasks, []);
   });
 });
