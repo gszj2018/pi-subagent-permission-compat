@@ -3,7 +3,7 @@
  *
  * The title is assembled from sanitized fragments only: field paths plus
  * JSON-quoted / single-line JSON values, so control characters in tool input
- * cannot forge prompt lines (plan §5.2). Approval is granted only for the
+ * cannot forge prompt lines. Approval is granted only for the
  * exact `Allow once` response and only for the current tool call; nothing is
  * persisted into the permission system.
  */
@@ -11,10 +11,10 @@
 import type { CwdEvaluation } from "./cwd-guard.ts";
 import { describeError, describeUnknown } from "./permissions-client.ts";
 
-/** Label prefixed to prompts and blocking reasons (plan §5.3). */
+/** Label prefixed to prompts and blocking reasons. */
 export const EXTENSION_PROMPT_LABEL = "[pi-subagent-permission-compat]";
 
-/** Options are English; the denying option comes first (plan §5.1). */
+/** Options are English; the denying option comes first. */
 export const DENY_OPTION = "Deny";
 export const ALLOW_ONCE_OPTION = "Allow once";
 
@@ -56,7 +56,7 @@ export function formatCwdEvaluation(evaluation: CwdEvaluation): string {
   return `${evaluation.path} = ${formatCwdValue(evaluation.value)} [${evaluation.state}${suffix}]`;
 }
 
-/** Build the multi-line select title (plan §5.2). */
+/** Build the multi-line select title. */
 export function buildCwdPromptTitle(
   toolName: string,
   currentCwd: string,

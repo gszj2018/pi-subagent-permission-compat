@@ -1,8 +1,8 @@
 /**
  * Per-value `cwd` evaluation, aggregation, and blocking decisions.
  *
- * Implements the value table from plan §4.3 and the strict merge order from
- * §4.5 (`deny > ask > allow`). Every occurrence is evaluated; evaluation never
+ * Implements the per-value cwd table and the strict merge order
+ * (`deny > ask > allow`). Every occurrence is evaluated; evaluation never
  * short-circuits, even after a `deny`, so later items still surface. This
  * module dispatches queries through an injectable permission client and does
  * not implement any path-policy engine; interactive approval lives in the
@@ -69,7 +69,7 @@ function isNonEmptyString(value: unknown): value is string {
  *
  * - Every non-empty string is queried against `external_directory`, even for
  *   `.` or directories inside the current working directory; there is no
- *   implicit inside-cwd bypass (plan §4.3).
+ *   implicit inside-cwd bypass.
  * - `undefined`, `null`, and `""` are allowed without a query.
  * - Any other type is `ask` without a query.
  * - The service is resolved lazily: only when at least one non-empty string

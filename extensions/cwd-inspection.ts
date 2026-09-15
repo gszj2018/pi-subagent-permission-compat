@@ -59,7 +59,7 @@ function describeError(error: unknown): string {
 /**
  * Collect every `cwd` occurrence from the input tree.
  *
- * Rules (plan §4.2, simplified per staging decision):
+ * Rules (simplified per staging decision):
  * - Own enumerable string keys only; prototype fields are never read.
  * - The key must be exactly lowercase `cwd`.
  * - A `cwd` value is a leaf: it is recorded and never entered, even when it

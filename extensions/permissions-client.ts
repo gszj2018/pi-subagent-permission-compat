@@ -15,7 +15,7 @@
  *
  * All lookups are fail-closed and never cached across tool calls: an
  * unavailable service makes the current call's string `cwd` items `ask`, and
- * later calls retry from scratch (plan §4.4).
+ * later calls retry from scratch.
  */
 
 import type {
@@ -59,7 +59,7 @@ export type ExternalDirectoryCheck =
 export function describeUnknown(value: unknown): string {
   try {
     // Strings stay JSON-quoted so control characters cannot forge prompt
-    // lines (plan §5.2); undefined/symbol/function fall back via `??`.
+    // lines; undefined/symbol/function fall back via `??`.
     return JSON.stringify(value) ?? String(value);
   } catch {
     return "[unserializable value]";
@@ -84,7 +84,7 @@ export function describeError(error: unknown): string {
  * into this node. Both failures degrade to a structured "unavailable"
  * result; malformed services fail per-item at query time instead.
  *
- * Never cached: every tool call resolves fresh (plan §4.4).
+ * Never cached: every tool call resolves fresh.
  */
 export async function resolvePermissionsService(
   importer: PermissionModuleImporter,

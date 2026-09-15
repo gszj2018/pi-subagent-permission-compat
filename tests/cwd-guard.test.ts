@@ -44,7 +44,7 @@ function createDepsStub(options: {
   };
 }
 
-describe("per-value classification (plan §4.3)", () => {
+describe("per-value classification", () => {
   it("queries every non-empty string raw, including whitespace and dot paths", async () => {
     const deps = createDepsStub();
     const input = { cwd: "  ", other: { cwd: "." }, list: [{ cwd: "C:\\outside" }] };
@@ -118,7 +118,7 @@ describe("per-value classification (plan §4.3)", () => {
   });
 });
 
-describe("service resolution and fail-closed degradation (plan §4.4)", () => {
+describe("service resolution and fail-closed degradation", () => {
   it("degrades string items to ask when the service is unavailable", async () => {
     const deps = createDepsStub({
       resolution: { ok: false, reason: "permissions service accessor is unavailable" },
@@ -197,7 +197,7 @@ describe("service resolution and fail-closed degradation (plan §4.4)", () => {
   });
 });
 
-describe("strict merge (plan §4.5)", () => {
+describe("strict merge", () => {
   const matrixCases: {
     name: string;
     states: Array<"allow" | "ask" | "deny">;

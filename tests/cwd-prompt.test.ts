@@ -80,7 +80,7 @@ describe("value and line formatting", () => {
   });
 });
 
-describe("prompt title (plan §5.2)", () => {
+describe("prompt title", () => {
   it("contains the label, tool name, current directory, and every evaluation line", () => {
     const title = buildCwdPromptTitle("subagent", "/workspace/project", [
       evaluation({ path: `$["cwd"]`, value: "", state: "allow", reason: "empty or missing cwd" }),

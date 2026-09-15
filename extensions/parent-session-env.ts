@@ -112,7 +112,7 @@ export function decidePublication(
 /**
  * Lifecycle controller for the owned parent-session environment variable.
  *
- * - `handleSessionStart` implements the detection order from the plan and
+ * - `handleSessionStart` implements the detection order and
  *   records a publication only when this instance actually wrote the value.
  * - `handleSessionShutdown` removes the value only when it is still owned
  *   (name and value both match) and is idempotent.

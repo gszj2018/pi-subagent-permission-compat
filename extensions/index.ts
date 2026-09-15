@@ -121,7 +121,7 @@ export function createCwdGuardFeature(
     const sessionId = ctx.sessionManager.getSessionId();
     const outcome = await evaluateCwdOccurrences(event.input, sessionId, options.guardDeps);
 
-    // An incompletely scanned input is a hard block regardless of UI (§5.2).
+    // An incompletely scanned input is a hard block regardless of UI.
     if (outcome.scanError !== undefined) {
       return {
         block: true,
@@ -134,7 +134,7 @@ export function createCwdGuardFeature(
     }
 
     if (outcome.aggregate === "deny") {
-      // A policy deny cannot be overridden by the user (§4.5, §5.3).
+      // A policy deny cannot be overridden by the user.
       const denied = outcome.evaluations
         .filter((evaluation) => evaluation.state === "deny")
         .map((evaluation) => `${evaluation.path} = ${describeUnknown(evaluation.value)}`);
