@@ -13,7 +13,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   PARENT_SESSION_ENV_VAR,
   ParentSessionEnvController,
-  type PublicationDecision,
   type SubagentEnv,
 } from "./parent-session-env.ts";
 
@@ -39,8 +38,7 @@ export function createSubagentPermissionCompatExtension(
 
   pi.on("session_start", (_event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
-    const decision: PublicationDecision =
-      controller.handleSessionStart(sessionId);
+    const decision = controller.handleSessionStart(sessionId);
     if (decision.skipReason === "invalid-session-id") {
       // Diagnostics must not corrupt RPC stdout; ctx.ui.notify goes through
       // the sanctioned extension UI channel in every mode.
