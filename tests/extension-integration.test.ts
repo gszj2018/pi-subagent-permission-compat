@@ -128,7 +128,10 @@ function createToolCallContext(options: {
   return { ctx, selectCalls };
 }
 
-function fireToolCall(pi: StubPi, ctx: ExtensionContext, event: Partial<ToolCallEvent> & { toolName: string; input: unknown }): ToolCallEventResult | undefined | Promise<ToolCallEventResult | undefined> {
+function fireToolCall(pi: StubPi, ctx: ExtensionContext, event: Partial<ToolCallEvent> & {
+  toolName: string;
+  input: unknown
+}): ToolCallEventResult | undefined | Promise<ToolCallEventResult | undefined> {
   const handler = pi.handlers.get("tool_call");
   assert.ok(handler, "tool_call handler must be registered");
   return handler(
@@ -448,7 +451,12 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
       }
     };
 
-    const event = { type: "tool_call" as const, toolCallId: "call-1", toolName: "delegate", input: { tasks: [{ cwd: "../denied" }, { cwd: "/workspace/project" }] } };
+    const event = {
+      type: "tool_call" as const,
+      toolCallId: "call-1",
+      toolName: "delegate",
+      input: { tasks: [{ cwd: "../denied" }, { cwd: "/workspace/project" }] }
+    };
     const result = (await fireToolCall(pi, ctx, event)) as ToolCallEventResult;
 
     // A blocked call never reaches the executor: no subtask runs at all.
@@ -484,8 +492,7 @@ describe("cross-phase regression (capabilities compose)", () => {
     createSubagentPermissionCompatExtension(pi.api, { env, ...baseOptions() });
     const firstSession = createSessionContext("sess-before-reload");
     const secondSession = createSessionContext("sess-after-reload");
-    const before = createToolCallContext({ cwd: "/old", select: () => ALLOW_ONCE_OPTION });
-    const after = createToolCallContext({ cwd: "/new", select: () => ALLOW_ONCE_OPTION });
+    const before = createToolCallContext({ cwd: "/old", select: () => DENY_OPTION });
 
     fireSessionStart(pi, firstSession.ctx);
     await fireToolCall(pi, before.ctx, { toolName: "subagent", input: { cwd: "/old" } });
@@ -498,11 +505,8 @@ describe("cross-phase regression (capabilities compose)", () => {
     assert.equal(env[PARENT_SESSION_ENV_VAR], "sess-after-reload");
     // Same input now compares against the new cwd and asks; the user denies it.
     const denying = createToolCallContext({ cwd: "/new", select: () => DENY_OPTION });
-    const result = (await fireToolCall(pi, denying.ctx, {
-      toolName: "subagent",
-      input: { cwd: "/old" },
-    })) as ToolCallEventResult;
-    assert.equal(result.block, true);
+    const result = await fireToolCall(pi, denying.ctx, { toolName: "subagent", input: { cwd: "/old" } })
+    assert.equal(result?.block, true);
   });
 
   it("an ask that the user rejects blocks the call with the approval-denied reason", async () => {
