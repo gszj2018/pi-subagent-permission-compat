@@ -73,8 +73,8 @@ describe("value and line formatting", () => {
     );
     // Multi-line reasons are flattened to one line.
     assert.equal(
-      formatCwdEvaluation(evaluation({ reason: "path normalization failed: broken\nnext line" })),
-      `$["cwd"] = "../outside" [ask: path normalization failed: broken next line]`,
+      formatCwdEvaluation(evaluation({ reason: "differs from current\ndirectory next\tline" })),
+      `$["cwd"] = "../outside" [ask: differs from current directory next line]`,
     );
     // An empty reason shows the bare state without a suffix.
     assert.equal(

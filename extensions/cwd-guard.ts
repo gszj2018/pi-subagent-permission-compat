@@ -6,14 +6,14 @@
  * anything else is `ask`. The comparison is purely lexical string equality
  * after Node's lexical normalization: there is no resolve, realpath,
  * containment, case folding, or filesystem access. Empty/missing values are
- * allowed without a call, other types are `ask`. Evaluation never
- * short-circuits, and a scan error makes the aggregate a hard `deny`.
+ * allowed without a call, other types are `ask`. A scan error or an
+ * evaluation failure short-circuits into a hard `deny` outcome with a
+ * generic error message.
  */
 
 import {
   collectCwdOccurrences,
   type CwdOccurrence,
-  type CwdScanError,
 } from "./cwd-inspection.ts";
 import { describeError, describeUnknown } from "./diagnostics.ts";
 
@@ -39,8 +39,12 @@ export interface CwdEvaluationOutcome {
   evaluations: CwdEvaluation[];
   /** Strict merge of all evaluations; an empty set is `allow`. */
   aggregate: PermissionState;
-  /** Present when the input tree could not be scanned safely; callers must block. */
-  scanError?: CwdScanError;
+  /**
+   * Present when the input could not be scanned or evaluated safely; callers
+   * must block. Covers both scan failures and the defensive evaluation
+   * fallback, and is safe to display (never a stack trace).
+   */
+  error?: string;
 }
 
 /** Whether the value is a string that must be compared against the current cwd. */
@@ -55,18 +59,8 @@ function evaluateNonEmptyString(
   currentCwd: string,
   normalizePath: NormalizePath,
 ): CwdEvaluation {
-  let normalizedInput: string;
-  try {
-    normalizedInput = normalizePath(value);
-  } catch (error) {
-    return { path, value, state: "ask", reason: `path normalization failed: ${describeError(error)}` };
-  }
-  let normalizedCurrent: string;
-  try {
-    normalizedCurrent = normalizePath(currentCwd);
-  } catch (error) {
-    return { path, value, state: "ask", reason: `path normalization failed: ${describeError(error)}` };
-  }
+  const normalizedInput = normalizePath(value);
+  const normalizedCurrent = normalizePath(currentCwd);
   return normalizedInput === normalizedCurrent
     ? { path, value, state: "allow", reason: "matches current directory" }
     : { path, value, state: "ask", reason: "differs from current directory" };
@@ -81,11 +75,13 @@ function evaluateNonEmptyString(
  *   across tool calls.
  * - `undefined`, `null`, and `""` are allowed without calling the normalizer.
  * - Any other type is `ask` without calling the normalizer.
- * - A normalization failure degrades that item to `ask`; remaining items are
- *   still evaluated, and a failure is never turned into an allow.
- * - A `deny` never short-circuits: remaining items are still evaluated.
- * - A scan error forces the aggregate to `deny`: an incompletely scanned call
- *   is hard-blocked and cannot be approved by the user.
+ * - A conforming normalizer never throws for string input, so no per-item
+ *   guard is needed. As a defensive fallback, any throw from the injected
+ *   function discards per-item results and fails the whole call closed to a
+ *   hard `deny` (never allow, and no stack trace escapes the guard; the
+ *   thrown message is passed through as the outcome error).
+ * - A scan error short-circuits: an incompletely scanned input is hard-denied
+ *   without evaluating the collected occurrences.
  */
 export function evaluateCwdOccurrences(
   input: unknown,
@@ -94,31 +90,34 @@ export function evaluateCwdOccurrences(
 ): CwdEvaluationOutcome {
   const scan = collectCwdOccurrences(input);
 
-  const evaluations: CwdEvaluation[] = scan.occurrences.map((occurrence: CwdOccurrence) => {
-    const { path, value } = occurrence;
-    if (isNonEmptyString(value)) {
-      return evaluateNonEmptyString(path, value, currentCwd, normalizePath);
-    }
-    if (value === undefined || value === null || value === "") {
-      return { path, value, state: "allow", reason: "empty or missing cwd" };
-    }
-    return { path, value, state: "ask", reason: `invalid cwd type: ${describeUnknown(value)}` };
-  });
-
-  let aggregate: PermissionState = "allow";
-  for (const evaluation of evaluations) {
-    if (evaluation.state === "deny") {
-      aggregate = "deny";
-      break;
-    }
-    if (evaluation.state === "ask") {
-      aggregate = "ask";
-    }
-  }
-  // Fail-closed hard refusal: an incomplete scan can never read as approvable.
-  if (scan.error !== undefined) {
-    aggregate = "deny";
+  // Fail-closed short circuit: an incompletely scanned input can never be
+  // evaluated, so hard-deny before any per-item evaluation happens.
+  if (scan.error) {
+    return { evaluations: [], aggregate: "deny", error: scan.error.message };
   }
 
-  return { evaluations, aggregate, scanError: scan.error };
+  // Defensive fail-closed net: a conforming `path.normalize` never throws for
+  // string input, but a broken injection must not escape the guard.
+  let evaluations: CwdEvaluation[];
+  try {
+    evaluations = scan.occurrences.map((occurrence: CwdOccurrence) => {
+      const { path, value } = occurrence;
+      if (isNonEmptyString(value)) {
+        return evaluateNonEmptyString(path, value, currentCwd, normalizePath);
+      }
+      if (value === undefined || value === null || value === "") {
+        return { path, value, state: "allow", reason: "empty or missing cwd" };
+      }
+      return { path, value, state: "ask", reason: `invalid cwd type: ${describeUnknown(value)}` };
+    });
+  } catch (error) {
+    // Fail-closed fallback: an unknown evaluation outcome is a hard deny; the
+    // thrown message is passed through for display (never a stack trace).
+    return { evaluations: [], aggregate: "deny", error: describeError(error) };
+  }
+
+  // Per-value evaluation only produces allow/ask; any ask makes the merged
+  // outcome ask, everything else allows.
+  const aggregate: PermissionState = evaluations.some((e) => e.state === "ask") ? "ask" : "allow";
+  return { evaluations, aggregate };
 }

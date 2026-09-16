@@ -202,36 +202,30 @@ describe("no caching across calls", () => {
   });
 });
 
-describe("normalization failure handling", () => {
-  it("asks and continues when the input side throws", () => {
+describe("defensive failure handling", () => {
+  it("fails closed to deny when the normalizer throws for the input value", () => {
     const outcome = evaluateCwdOccurrences(
-      { first: { cwd: "../throw" }, second: { cwd: "/w" } },
+      { first: { cwd: "../throw" }, second: { cwd: "../b" }, empty: { cwd: "" } },
       "/w",
       throwingNormalize("../throw"),
     );
 
-    assert.deepEqual(
-      outcome.evaluations.map((e) => ({ state: e.state, reason: e.reason })),
-      [
-        { state: "ask", reason: "path normalization failed: normalizer exploded" },
-        { state: "allow", reason: "matches current directory" },
-      ],
-    );
-    assert.equal(outcome.aggregate, "ask");
+    // Per-item results are discarded; the failure is a hard deny.
+    assert.deepEqual(outcome.evaluations, []);
+    assert.equal(outcome.aggregate, "deny");
+    assert.match(outcome.error ?? "", /normalizer exploded/);
   });
 
-  it("asks and continues when the current-cwd side throws", () => {
+  it("fails closed to deny when the normalizer throws for the current cwd", () => {
     const outcome = evaluateCwdOccurrences(
-      { first: { cwd: "../a" }, empty: { cwd: "" }, typed: { cwd: 7 } },
+      { first: { cwd: "../a" } },
       "/hostile-cwd",
       throwingNormalize("/hostile-cwd"),
     );
 
-    assert.equal(outcome.evaluations[0]?.state, "ask");
-    assert.match(outcome.evaluations[0]?.reason ?? "", /path normalization failed/);
-    assert.equal(outcome.evaluations[1]?.state, "allow", "empty values are unaffected");
-    assert.equal(outcome.evaluations[2]?.state, "ask", "invalid types keep their own ask");
-    assert.equal(outcome.aggregate, "ask");
+    assert.deepEqual(outcome.evaluations, []);
+    assert.equal(outcome.aggregate, "deny");
+    assert.match(outcome.error ?? "", /normalizer exploded/);
   });
 });
 
@@ -262,7 +256,7 @@ describe("strict merge", () => {
   });
 });
 
-describe("scan errors force a hard deny", () => {
+describe("scan errors short-circuit to a hard deny", () => {
   const cwd = "/work/project";
 
   function hostileInput(): Record<string, unknown> {
@@ -278,12 +272,11 @@ describe("scan errors force a hard deny", () => {
     return input;
   }
 
-  it("denies on a scan error even when the collected items are all allow", () => {
+  it("denies without evaluating the collected occurrences", () => {
     const outcome = evaluateCwdOccurrences(hostileInput(), cwd, posixNormalize);
-    assert.ok(outcome.scanError);
-    assert.match(outcome.scanError.message, /scan exploded/);
-    assert.equal(outcome.evaluations.length, 1, "the safe branch was still collected");
-    assert.equal(outcome.evaluations[0]?.state, "allow", "collected items keep their own state");
+    assert.ok(outcome.error);
+    assert.match(outcome.error, /scan exploded/);
+    assert.deepEqual(outcome.evaluations, []);
     assert.equal(outcome.aggregate, "deny");
   });
 
@@ -297,24 +290,8 @@ describe("scan errors force a hard deny", () => {
       },
     });
     const outcome = evaluateCwdOccurrences(input, cwd, posixNormalize);
-    assert.ok(outcome.scanError);
+    assert.ok(outcome.error);
     assert.deepEqual(outcome.evaluations, []);
-    assert.equal(outcome.aggregate, "deny");
-  });
-
-  it("denies on a scan error even when a collected item is ask", () => {
-    const input: Record<string, unknown> = {};
-    input["before"] = { cwd: "../outside" };
-    Object.defineProperty(input, "danger", {
-      enumerable: true,
-      configurable: true,
-      get() {
-        throw new Error("scan exploded");
-      },
-    });
-    const outcome = evaluateCwdOccurrences(input, cwd, posixNormalize);
-    assert.ok(outcome.scanError);
-    assert.equal(outcome.evaluations[0]?.state, "ask");
     assert.equal(outcome.aggregate, "deny");
   });
 
@@ -324,8 +301,9 @@ describe("scan errors force a hard deny", () => {
       deep = { nested: deep };
     }
     const outcome = evaluateCwdOccurrences(deep, cwd, posixNormalize);
-    assert.ok(outcome.scanError);
-    assert.match(outcome.scanError.message, /maximum scan depth/);
+    assert.ok(outcome.error);
+    assert.match(outcome.error, /maximum scan depth/);
+    assert.deepEqual(outcome.evaluations, []);
     assert.equal(outcome.aggregate, "deny");
   });
 });

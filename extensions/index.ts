@@ -118,24 +118,19 @@ export function createCwdGuardFeature(
 
     const outcome = evaluateCwdOccurrences(event.input, ctx.cwd, options.normalizePath);
 
-    // An incompletely scanned input is a hard block regardless of UI.
-    if (outcome.scanError !== undefined) {
-      return {
-        block: true,
-        reason: `${EXTENSION_PROMPT_LABEL} Subagent tool input could not be safely scanned; the call is blocked. ${outcome.scanError.message}`,
-      };
-    }
-
     if (outcome.aggregate === "allow") {
       return undefined;
     }
 
     if (outcome.aggregate === "deny") {
-      // Defensive: per-value evaluation can no longer produce a deny; any
-      // deny here is a generic hard refusal, not a permission-policy result.
+      // A deny is a hard block that the user cannot override. With an error
+      // message the input could not be scanned or evaluated safely; without
+      // one this is the defensive hard refusal for an impossible deny.
       return {
         block: true,
-        reason: `${EXTENSION_PROMPT_LABEL} Subagent tool call blocked: the working directories could not be approved; the call is denied.`,
+        reason: outcome.error !== undefined
+          ? `${EXTENSION_PROMPT_LABEL} Subagent tool call blocked: the tool input could not be safely evaluated; the call is denied. ${outcome.error}`
+          : `${EXTENSION_PROMPT_LABEL} Subagent tool call blocked: the working directories could not be approved; the call is denied.`,
       };
     }
 

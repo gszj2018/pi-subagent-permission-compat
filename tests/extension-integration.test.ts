@@ -374,7 +374,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
     })) as ToolCallEventResult;
 
     assert.equal(result.block, true);
-    assert.match(result.reason ?? "", /could not be safely scanned/);
+    assert.match(result.reason ?? "", /could not be safely evaluated/);
     assert.deepEqual(selectCalls, [], "a scan failure must not reach the user prompt");
   });
 
