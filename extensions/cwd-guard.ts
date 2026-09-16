@@ -20,6 +20,13 @@ import { describeError, describeUnknown } from "./diagnostics.ts";
 export type PermissionState = "allow" | "ask" | "deny";
 
 /**
+ * Per-value evaluation state. Only allow/ask can come from per-value
+ * evaluation; `deny` only ever appears in the merged aggregate as a
+ * fail-closed short circuit for scan/evaluation failures.
+ */
+export type EvaluationState = Exclude<PermissionState, "deny">;
+
+/**
  * Synchronous, pure path normalizer, e.g. `path.normalize` for the current
  * platform; tests inject `path.posix.normalize` or `path.win32.normalize`.
  */
@@ -29,7 +36,7 @@ export type NormalizePath = (path: string) => string;
 export interface CwdEvaluation {
   path: string;
   value: unknown;
-  state: PermissionState;
+  state: EvaluationState;
   reason: string;
 }
 
@@ -116,8 +123,7 @@ export function evaluateCwdOccurrences(
     return { evaluations: [], aggregate: "deny", error: describeError(error) };
   }
 
-  // Per-value evaluation only produces allow/ask; any ask makes the merged
-  // outcome ask, everything else allows.
-  const aggregate: PermissionState = evaluations.some((e) => e.state === "ask") ? "ask" : "allow";
+  // Per-value evaluation only produces allow/ask; any ask makes the merged outcome ask.
+  const aggregate: PermissionState = evaluations.every((e) => e.state === "allow") ? "allow" : "ask";
   return { evaluations, aggregate };
 }
