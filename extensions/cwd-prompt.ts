@@ -1,9 +1,9 @@
 /**
  * Safe display and select-based approval for subagent `cwd` asks.
  *
- * The title is assembled from sanitized fragments only: field paths plus
- * JSON-quoted / single-line JSON values, so control characters in tool input
- * cannot forge prompt lines. Approval is granted only for the
+ * Tool-input cwd values use JSON-quoted / single-line JSON display, so control
+ * characters in those values cannot forge prompt lines. The current directory
+ * from the host context is displayed verbatim. Approval is granted only for the
  * exact `Allow once` response and only for the current tool call; nothing is
  * persisted into the permission system.
  */
@@ -65,7 +65,7 @@ export function buildCwdPromptTitle(
   const lines = [
     `${EXTENSION_PROMPT_LABEL} Review subagent working directories`,
     `Tool: ${toolName}`,
-    `Current directory: ${JSON.stringify(currentCwd)}`,
+    `Current directory: ${currentCwd}`,
     ...evaluations.map(formatCwdEvaluation),
     "Allow this tool call once?",
   ];

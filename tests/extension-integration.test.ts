@@ -301,7 +301,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
     assert.equal(selectCalls.length, 1, "multi-cwd calls must prompt exactly once");
     assert.ok(selectCalls[0]?.title.includes(`$["cwd"] = "../shared" [ask: differs from current directory]`));
     assert.ok(selectCalls[0]?.title.includes(`$["tasks"][0]["cwd"] = "/workspace/project" [allow: matches current directory]`));
-    assert.ok(selectCalls[0]?.title.includes('Current directory: "/workspace/project"'));
+    assert.ok(selectCalls[0]?.title.includes("Current directory: /workspace/project"));
     assert.deepEqual(selectCalls[0]?.options, [DENY_OPTION, ALLOW_ONCE_OPTION]);
   });
 

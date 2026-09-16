@@ -105,11 +105,18 @@ describe("prompt title", () => {
     const lines = title.split("\n");
     assert.equal(lines[0], "[pi-subagent-permission-compat] Review subagent working directories");
     assert.equal(lines[1], "Tool: subagent");
-    assert.equal(lines[2], 'Current directory: "/workspace/project"');
+    assert.equal(lines[2], "Current directory: /workspace/project");
     assert.equal(lines[3], `$["cwd"] = "" [allow: empty or missing cwd]`);
     assert.equal(lines[4], `$["tasks"][0]["cwd"] = "../shared" [ask: differs from current directory]`);
     assert.equal(lines[5], `$["tasks"][1]["cwd"] = {"path":"../other"} [ask: invalid cwd type]`);
     assert.equal(lines[6], "Allow this tool call once?");
+  });
+
+  it("displays the current directory verbatim without JSON quoting or escaping", () => {
+    const currentCwd = 'C:\\workspace\\a "quoted" directory';
+    const title = buildCwdPromptTitle("subagent", currentCwd, []);
+
+    assert.equal(title.split("\n")[2], `Current directory: ${currentCwd}`);
   });
 
   it("does not omit any cwd item and never appends extra fragments via values", () => {
