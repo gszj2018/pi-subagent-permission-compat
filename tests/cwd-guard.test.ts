@@ -262,20 +262,23 @@ describe("scan errors short-circuit to a hard deny", () => {
   function hostileInput(): Record<string, unknown> {
     const input: Record<string, unknown> = {};
     input["before"] = { cwd: cwd };
-    Object.defineProperty(input, "danger", {
+    const nested: Record<string, unknown> = {};
+    Object.defineProperty(nested, "danger", {
       enumerable: true,
       configurable: true,
       get() {
         throw new Error("scan exploded");
       },
     });
+    input["nested"] = nested;
     return input;
   }
 
   it("denies without evaluating the collected occurrences", () => {
     const outcome = evaluateCwdOccurrences(hostileInput(), cwd, posixNormalize);
     assert.ok(outcome.error);
-    assert.match(outcome.error, /scan exploded/);
+    assert.match(outcome.error, /\$\["nested"]/);
+    assert.match(outcome.error, /not a plain JSON object or array/);
     assert.deepEqual(outcome.evaluations, []);
     assert.equal(outcome.aggregate, "deny");
   });

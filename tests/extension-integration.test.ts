@@ -353,13 +353,15 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
     const input: Record<string, unknown> = {};
     input["before"] = { cwd: CWD_POSIX };
-    Object.defineProperty(input, "danger", {
+    const nested: Record<string, unknown> = {};
+    Object.defineProperty(nested, "danger", {
       enumerable: true,
       configurable: true,
       get() {
         throw new Error("scan exploded");
       },
     });
+    input["nested"] = nested;
     const { ctx, selectCalls } = createToolCallContext({ select: selectAllowOnce });
 
     const result = (await fireToolCall(pi, ctx, {
