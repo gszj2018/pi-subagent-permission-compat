@@ -94,6 +94,11 @@ interface ToolCallStub {
   selectCalls: { title: string; options: string[] }[];
 }
 
+const CWD_POSIX = "/workspace/project";
+const CWD_WIN32 = "C:\\workspace\\project";
+const selectAllowOnce = () => ALLOW_ONCE_OPTION;
+const selectDeny = () => DENY_OPTION;
+
 /**
  * Tool-call context whose session ID getter is intentionally not callable:
  * the tool_call handler must decide from the event cwd, never the session ID.
@@ -112,7 +117,7 @@ function createToolCallContext(options: {
       },
     },
     hasUI: options.hasUI ?? true,
-    cwd: options.cwd ?? "/workspace/project",
+    cwd: options.cwd ?? CWD_POSIX,
     signal: undefined,
     ui: {
       select: async (title: string, optionList: string[]) => {
@@ -238,7 +243,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
   it("ignores tools that do not match the pattern without any evaluation", async () => {
     const pi = createStubPi();
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
-    const { ctx, selectCalls } = createToolCallContext({ select: () => ALLOW_ONCE_OPTION });
+    const { ctx, selectCalls } = createToolCallContext({ select: selectAllowOnce });
 
     const result = await fireToolCall(pi, ctx, {
       toolName: "read",
@@ -252,11 +257,11 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
   it("returns undefined for an all-allow call without prompting (posix)", async () => {
     const pi = createStubPi();
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions(posixNormalize) });
-    const { ctx, selectCalls } = createToolCallContext({ select: () => ALLOW_ONCE_OPTION });
+    const { ctx, selectCalls } = createToolCallContext({ select: selectAllowOnce });
 
     const result = await fireToolCall(pi, ctx, {
       toolName: "subagent",
-      input: { cwd: "/workspace/project" },
+      input: { cwd: CWD_POSIX },
     });
 
     assert.equal(result, undefined);
@@ -268,8 +273,8 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions(win32Normalize) });
     // Forward slashes fold to backslashes: the same directory, so allow.
     const allowed = createToolCallContext({
-      cwd: "C:\\workspace\\project",
-      select: () => ALLOW_ONCE_OPTION,
+      cwd: CWD_WIN32,
+      select: selectAllowOnce,
     });
     assert.equal(
       await fireToolCall(pi, allowed.ctx, { toolName: "subagent", input: { cwd: "C:/workspace/project" } }),
@@ -278,7 +283,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
     assert.deepEqual(allowed.selectCalls, []);
 
     // A different drive stays ask and prompts.
-    const asking = createToolCallContext({ cwd: "C:\\workspace\\project", select: () => DENY_OPTION });
+    const asking = createToolCallContext({ cwd: CWD_WIN32, select: selectDeny });
     const result = (await fireToolCall(pi, asking.ctx, {
       toolName: "subagent",
       input: { cwd: "D:\\workspace\\project" },
@@ -290,11 +295,11 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
   it("asks once with all cwd lines in the title and approves on Allow once", async () => {
     const pi = createStubPi();
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
-    const { ctx, selectCalls } = createToolCallContext({ select: () => ALLOW_ONCE_OPTION });
+    const { ctx, selectCalls } = createToolCallContext({ select: selectAllowOnce });
 
     const result = await fireToolCall(pi, ctx, {
       toolName: "subagent",
-      input: { cwd: "../shared", tasks: [{ cwd: "/workspace/project" }] },
+      input: { cwd: "../shared", tasks: [{ cwd: CWD_POSIX }] },
     });
 
     assert.equal(result, undefined);
@@ -345,7 +350,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
   it("blocks an ask without interactive UI (print/JSON modes) and never prompts", async () => {
     const pi = createStubPi();
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
-    const { ctx, selectCalls } = createToolCallContext({ hasUI: false, select: () => ALLOW_ONCE_OPTION });
+    const { ctx, selectCalls } = createToolCallContext({ hasUI: false, select: selectAllowOnce });
 
     const result = (await fireToolCall(pi, ctx, {
       toolName: "subagent",
@@ -361,7 +366,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
     const pi = createStubPi();
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
     const input: Record<string, unknown> = {};
-    input["before"] = { cwd: "/workspace/project" };
+    input["before"] = { cwd: CWD_POSIX };
     Object.defineProperty(input, "danger", {
       enumerable: true,
       configurable: true,
@@ -369,7 +374,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
         throw new Error("scan exploded");
       },
     });
-    const { ctx, selectCalls } = createToolCallContext({ select: () => ALLOW_ONCE_OPTION });
+    const { ctx, selectCalls } = createToolCallContext({ select: selectAllowOnce });
 
     const result = (await fireToolCall(pi, ctx, {
       toolName: "subagent",
@@ -384,7 +389,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
   it("asks again for a repeated ask call without reusing a previous approval", async () => {
     const pi = createStubPi();
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
-    const { ctx, selectCalls } = createToolCallContext({ select: () => ALLOW_ONCE_OPTION });
+    const { ctx, selectCalls } = createToolCallContext({ select: selectAllowOnce });
 
     const first = await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: "../a" } });
     const second = await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: "../a" } });
@@ -398,17 +403,17 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
     const pi = createStubPi();
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
 
-    const matching = createToolCallContext({ cwd: "/workspace/project", select: () => ALLOW_ONCE_OPTION });
+    const matching = createToolCallContext({ cwd: CWD_POSIX, select: selectAllowOnce });
     assert.equal(
-      await fireToolCall(pi, matching.ctx, { toolName: "subagent", input: { cwd: "/workspace/project" } }),
+      await fireToolCall(pi, matching.ctx, { toolName: "subagent", input: { cwd: CWD_POSIX } }),
       undefined,
     );
     assert.deepEqual(matching.selectCalls, []);
 
-    const differing = createToolCallContext({ cwd: "/elsewhere", select: () => DENY_OPTION });
+    const differing = createToolCallContext({ cwd: "/elsewhere", select: selectDeny });
     const result = (await fireToolCall(pi, differing.ctx, {
       toolName: "subagent",
-      input: { cwd: "/workspace/project" },
+      input: { cwd: CWD_POSIX },
     })) as ToolCallEventResult;
     assert.equal(result.block, true, "the same input must ask against a different cwd");
     assert.equal(differing.selectCalls.length, 1);
@@ -419,10 +424,10 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
     const event = { toolName: "subagent", input: { cwd: "/work" } };
 
-    const before = createToolCallContext({ cwd: "/work", select: () => ALLOW_ONCE_OPTION });
+    const before = createToolCallContext({ cwd: "/work", select: selectAllowOnce });
     assert.equal(await fireToolCall(pi, before.ctx, event), undefined);
 
-    const after = createToolCallContext({ cwd: "/other", select: () => DENY_OPTION });
+    const after = createToolCallContext({ cwd: "/other", select: selectDeny });
     const result = (await fireToolCall(pi, after.ctx, event)) as ToolCallEventResult;
     assert.equal(result.block, true);
   });
@@ -442,7 +447,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
   it("blocking a batch call keeps every subtask from running (atomic refusal)", async () => {
     const pi = createStubPi();
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
-    const { ctx } = createToolCallContext({ select: () => DENY_OPTION });
+    const { ctx } = createToolCallContext({ select: selectDeny });
     const executedTasks: string[] = [];
     const fakeExecutor = (task: string, event?: ToolCallEvent): void => {
       // The host runs tools only when no handler blocked the call.
@@ -455,7 +460,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
       type: "tool_call" as const,
       toolCallId: "call-1",
       toolName: "delegate",
-      input: { tasks: [{ cwd: "../denied" }, { cwd: "/workspace/project" }] }
+      input: { tasks: [{ cwd: "../denied" }, { cwd: CWD_POSIX }] }
     };
     const result = (await fireToolCall(pi, ctx, event)) as ToolCallEventResult;
 
@@ -475,14 +480,14 @@ describe("cross-phase regression (capabilities compose)", () => {
     const pi = createStubPi();
     createSubagentPermissionCompatExtension(pi.api, { env, ...baseOptions() });
     const sessionCtx = createSessionContext("sess-regression-1");
-    const { ctx, selectCalls } = createToolCallContext({ cwd: "/workspace/project", select: () => ALLOW_ONCE_OPTION });
+    const { ctx, selectCalls } = createToolCallContext({ cwd: CWD_POSIX, select: selectAllowOnce });
 
     // Session publication is unchanged and independent of cwd evaluation.
     fireSessionStart(pi, sessionCtx.ctx);
     assert.equal(env[PARENT_SESSION_ENV_VAR], "sess-regression-1");
 
     // The tool_call handler compares against the event cwd, not the session ID.
-    await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: "/workspace/project" } });
+    await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: CWD_POSIX } });
     assert.deepEqual(selectCalls, [], "a matching cwd allows without prompting");
   });
 
@@ -492,7 +497,7 @@ describe("cross-phase regression (capabilities compose)", () => {
     createSubagentPermissionCompatExtension(pi.api, { env, ...baseOptions() });
     const firstSession = createSessionContext("sess-before-reload");
     const secondSession = createSessionContext("sess-after-reload");
-    const before = createToolCallContext({ cwd: "/old", select: () => DENY_OPTION });
+    const before = createToolCallContext({ cwd: "/old", select: selectDeny });
 
     fireSessionStart(pi, firstSession.ctx);
     await fireToolCall(pi, before.ctx, { toolName: "subagent", input: { cwd: "/old" } });
@@ -504,7 +509,7 @@ describe("cross-phase regression (capabilities compose)", () => {
     fireSessionStart(pi, secondSession.ctx);
     assert.equal(env[PARENT_SESSION_ENV_VAR], "sess-after-reload");
     // Same input now compares against the new cwd and asks; the user denies it.
-    const denying = createToolCallContext({ cwd: "/new", select: () => DENY_OPTION });
+    const denying = createToolCallContext({ cwd: "/new", select: selectDeny });
     const result = await fireToolCall(pi, denying.ctx, { toolName: "subagent", input: { cwd: "/old" } })
     assert.equal(result?.block, true);
   });
@@ -513,7 +518,7 @@ describe("cross-phase regression (capabilities compose)", () => {
     const env: SubagentEnv = {};
     const pi = createStubPi();
     createSubagentPermissionCompatExtension(pi.api, { env, ...baseOptions() });
-    const { ctx, selectCalls } = createToolCallContext({ cwd: "/workspace/project", select: () => DENY_OPTION });
+    const { ctx, selectCalls } = createToolCallContext({ cwd: CWD_POSIX, select: selectDeny });
 
     const sessionCtx = createSessionContext("sess-regression-deny");
     fireSessionStart(pi, sessionCtx.ctx);
