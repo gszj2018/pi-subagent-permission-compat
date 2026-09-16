@@ -132,7 +132,7 @@ describe("cwd collection", () => {
     attachArrayKey(list, "extra", "../extra");
     const result = collectCwdOccurrences({ before: { cwd: "../ok" }, list });
     assert.ok(result.error, "a scan error must be reported");
-    assert.match(result.error.message, /invalid array index key at \$\["list"\]/);
+    assert.match(result.error.message, /invalid array index key at \$\["list"]/);
     assert.deepEqual(result.occurrences.map((o) => o.value), ["../ok", "../a"]);
   });
 
@@ -141,7 +141,7 @@ describe("cwd collection", () => {
     attachArrayKey(list, "cwd", "../array-level");
     const result = collectCwdOccurrences({ list });
     assert.ok(result.error, "a scan error must be reported");
-    assert.match(result.error.message, /invalid array index key at \$\["list"\]: "cwd"/);
+    assert.match(result.error.message, /invalid array index key at \$\["list"]: "cwd"/);
     assert.deepEqual(result.occurrences.map((o) => o.value), ["../a"]);
   });
 
@@ -159,13 +159,13 @@ describe("cwd collection", () => {
     const withProxy = { before: { cwd: "../ok" }, danger: new Proxy({}, {}) };
     const proxyResult = collectCwdOccurrences(withProxy);
     assert.ok(proxyResult.error, "a scan error must be reported");
-    assert.match(proxyResult.error.message, /\$\["danger"\]/);
+    assert.match(proxyResult.error.message, /\$\["danger"]/);
     assert.deepEqual(proxyResult.occurrences.map((o) => o.value), ["../ok"]);
 
     const withDate = { danger: new Date() };
     const dateResult = collectCwdOccurrences(withDate);
     assert.ok(dateResult.error, "a scan error must be reported");
-    assert.match(dateResult.error.message, /\$\["danger"\]/);
+    assert.match(dateResult.error.message, /\$\["danger"]/);
   });
 
   it("records non-JSON cwd values as unvalidated leaves", () => {
@@ -222,7 +222,7 @@ describe("cwd collection", () => {
 
     const nestedResult = collectCwdOccurrences({ before: { cwd: "../ok" }, wrapped: child });
     assert.ok(nestedResult.error, "a scan error must be reported");
-    assert.match(nestedResult.error.message, /\$\["wrapped"\]/);
+    assert.match(nestedResult.error.message, /\$\["wrapped"]/);
     assert.deepEqual(nestedResult.occurrences.map((o) => o.value), ["../ok"]);
   });
 
@@ -272,7 +272,7 @@ describe("cwd collection", () => {
 
     const result = collectCwdOccurrences(input);
     assert.ok(result.error, "a scan error must be reported");
-    assert.match(result.error.message, /\$\["nested"\]/);
+    assert.match(result.error.message, /\$\["nested"]/);
     // Items collected before the failure are still reported, but the caller
     // must block on scanError; nothing is silently allowed.
     assert.deepEqual(result.occurrences.map((o) => o.value), ["../ok"]);
