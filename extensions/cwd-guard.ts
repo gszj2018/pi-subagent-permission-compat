@@ -1,12 +1,13 @@
 /**
- * Per-value `cwd` evaluation, aggregation, and blocking decisions.
+ * Per-value `cwd` evaluation and aggregation.
  *
- * Implements the per-value cwd table and the strict merge order
- * (`deny > ask > allow`). Every occurrence is evaluated; evaluation never
- * short-circuits, even after a `deny`, so later items still surface. This
- * module dispatches queries through an injectable permission client and does
- * not implement any path-policy engine; interactive approval lives in the
- * prompt/UI layer (Phase 3).
+ * A non-empty string `cwd` is allowed only when `normalize(inputCwd) ===
+ * normalize(currentCwd)` under an injected `path.normalize`-shaped function;
+ * anything else is `ask`. The comparison is purely lexical string equality
+ * after Node's lexical normalization: there is no resolve, realpath,
+ * containment, case folding, or filesystem access. Empty/missing values are
+ * allowed without a call, other types are `ask`. Evaluation never
+ * short-circuits, and a scan error makes the aggregate a hard `deny`.
  */
 
 import {
@@ -14,18 +15,15 @@ import {
   type CwdOccurrence,
   type CwdScanError,
 } from "./cwd-inspection.ts";
-import {
-  checkExternalDirectory,
-  describeUnknown,
-  resolvePermissionsService,
-  type ExternalDirectoryCheck,
-  type PermissionModuleImporter,
-  type PermissionState,
-  type PermissionsService,
-  type ServiceResolution,
-} from "./permissions-client.ts";
+import { describeError, describeUnknown } from "./diagnostics.ts";
 
-export type { PermissionState };
+export type PermissionState = "allow" | "ask" | "deny";
+
+/**
+ * Synchronous, pure path normalizer, e.g. `path.normalize` for the current
+ * platform; tests inject `path.posix.normalize` or `path.win32.normalize`.
+ */
+export type NormalizePath = (path: string) => string;
 
 /** One evaluated `cwd` occurrence with its state and short English reason. */
 export interface CwdEvaluation {
@@ -45,69 +43,61 @@ export interface CwdEvaluationOutcome {
   scanError?: CwdScanError;
 }
 
-/** Injectable permission dependencies of the guard. */
-export interface CwdGuardDeps {
-  resolveService(sessionId: string): Promise<ServiceResolution>;
-  checkService(service: PermissionsService, rawCwd: string): ExternalDirectoryCheck;
-}
-
-/** Dependency set backed by an explicitly provided permission-system importer. */
-export function createDefaultCwdGuardDeps(importer: PermissionModuleImporter): CwdGuardDeps {
-  return {
-    resolveService: (sessionId) => resolvePermissionsService(importer, sessionId),
-    checkService: checkExternalDirectory,
-  };
-}
-
-/** Whether the value must be sent to the permission service untouched. */
+/** Whether the value is a string that must be compared against the current cwd. */
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
+}
+
+/** Evaluate one non-empty string against the current cwd via normalization. */
+function evaluateNonEmptyString(
+  path: string,
+  value: string,
+  currentCwd: string,
+  normalizePath: NormalizePath,
+): CwdEvaluation {
+  let normalizedInput: string;
+  try {
+    normalizedInput = normalizePath(value);
+  } catch (error) {
+    return { path, value, state: "ask", reason: `path normalization failed: ${describeError(error)}` };
+  }
+  let normalizedCurrent: string;
+  try {
+    normalizedCurrent = normalizePath(currentCwd);
+  } catch (error) {
+    return { path, value, state: "ask", reason: `path normalization failed: ${describeError(error)}` };
+  }
+  return normalizedInput === normalizedCurrent
+    ? { path, value, state: "allow", reason: "matches current directory" }
+    : { path, value, state: "ask", reason: "differs from current directory" };
 }
 
 /**
  * Evaluate every `cwd` occurrence of one tool call and merge the states.
  *
- * - Every non-empty string is queried against `external_directory`, even for
- *   `.` or directories inside the current working directory; there is no
- *   implicit inside-cwd bypass.
- * - `undefined`, `null`, and `""` are allowed without a query.
- * - Any other type is `ask` without a query.
- * - The service is resolved lazily: only when at least one non-empty string
- *   exists, once per tool call, keyed by the current session ID.
- * - Each query failure degrades that item to `ask`; remaining items still run.
+ * - Every non-empty string is compared after normalizing both sides with the
+ *   same injected function: equal means allow, different means ask. The raw
+ *   values are never trimmed or rewritten, and normalization is not cached
+ *   across tool calls.
+ * - `undefined`, `null`, and `""` are allowed without calling the normalizer.
+ * - Any other type is `ask` without calling the normalizer.
+ * - A normalization failure degrades that item to `ask`; remaining items are
+ *   still evaluated, and a failure is never turned into an allow.
  * - A `deny` never short-circuits: remaining items are still evaluated.
- * - A scan error floors the aggregate at `ask`: an incompletely scanned call
- *   must never be treated as a clean allow.
+ * - A scan error forces the aggregate to `deny`: an incompletely scanned call
+ *   is hard-blocked and cannot be approved by the user.
  */
-export async function evaluateCwdOccurrences(
+export function evaluateCwdOccurrences(
   input: unknown,
-  sessionId: string,
-  deps: CwdGuardDeps,
-): Promise<CwdEvaluationOutcome> {
+  currentCwd: string,
+  normalizePath: NormalizePath,
+): CwdEvaluationOutcome {
   const scan = collectCwdOccurrences(input);
-
-  let service: PermissionsService | undefined;
-  let serviceUnavailableReason: string | undefined;
-  const hasQueryableValue = scan.occurrences.some((o) => isNonEmptyString(o.value));
-  if (hasQueryableValue) {
-    const resolution = await deps.resolveService(sessionId);
-    if (resolution.ok) {
-      service = resolution.service;
-    } else {
-      serviceUnavailableReason = resolution.reason;
-    }
-  }
 
   const evaluations: CwdEvaluation[] = scan.occurrences.map((occurrence: CwdOccurrence) => {
     const { path, value } = occurrence;
     if (isNonEmptyString(value)) {
-      if (service === undefined) {
-        return { path, value, state: "ask", reason: `service unavailable: ${serviceUnavailableReason ?? "unknown"}` };
-      }
-      const check = deps.checkService(service, value);
-      return check.ok
-        ? { path, value, state: check.state, reason: "policy" }
-        : { path, value, state: "ask", reason: check.reason };
+      return evaluateNonEmptyString(path, value, currentCwd, normalizePath);
     }
     if (value === undefined || value === null || value === "") {
       return { path, value, state: "allow", reason: "empty or missing cwd" };
@@ -125,9 +115,9 @@ export async function evaluateCwdOccurrences(
       aggregate = "ask";
     }
   }
-  // Fail-closed floor: an incomplete scan must never read as a clean allow.
-  if (scan.error !== undefined && aggregate === "allow") {
-    aggregate = "ask";
+  // Fail-closed hard refusal: an incomplete scan can never read as approvable.
+  if (scan.error !== undefined) {
+    aggregate = "deny";
   }
 
   return { evaluations, aggregate, scanError: scan.error };

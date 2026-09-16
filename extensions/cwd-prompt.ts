@@ -9,7 +9,7 @@
  */
 
 import type { CwdEvaluation } from "./cwd-guard.ts";
-import { describeError, describeUnknown } from "./permissions-client.ts";
+import { describeError, describeUnknown } from "./diagnostics.ts";
 
 /** Label prefixed to prompts and blocking reasons. */
 export const EXTENSION_PROMPT_LABEL = "[pi-subagent-permission-compat]";
@@ -52,7 +52,7 @@ export function formatCwdValue(value: unknown): string {
 /** One `path = value [state(: reason)]` line for the prompt title. */
 export function formatCwdEvaluation(evaluation: CwdEvaluation): string {
   const reason = evaluation.reason.replace(/\s+/g, " ");
-  const suffix = reason !== "" && reason !== "policy" ? `: ${reason}` : "";
+  const suffix = reason !== "" ? `: ${reason}` : "";
   return `${evaluation.path} = ${formatCwdValue(evaluation.value)} [${evaluation.state}${suffix}]`;
 }
 

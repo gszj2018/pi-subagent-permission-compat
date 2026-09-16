@@ -1,263 +1,273 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 
-import { createDefaultCwdGuardDeps, evaluateCwdOccurrences, type CwdGuardDeps, } from "../extensions/cwd-guard.ts";
-import {
-  defaultPermissionModuleImporter,
-  type ExternalDirectoryCheck,
-  type PermissionsService,
-  type ServiceResolution,
-} from "../extensions/permissions-client.ts";
+import { evaluateCwdOccurrences, type NormalizePath } from "../extensions/cwd-guard.ts";
 
-const SESSION_ID = "sess-guard-0001";
+const posixNormalize: NormalizePath = (value) => path.posix.normalize(value);
 
-const allowAllService = {
-  checkPermission: () => ({ state: "allow" }),
-} as unknown as PermissionsService;
-
-/** Recording dependency stubs: counts resolutions and per-item queries. */
-function createDepsStub(options: {
-  resolution?: ServiceResolution;
-  check?: (rawCwd: string, index: number) => ExternalDirectoryCheck;
-} = {}): CwdGuardDeps & { resolveCalls: string[]; checkCalls: string[] } {
-  const resolveCalls: string[] = [];
-  const checkCalls: string[] = [];
-  let checkIndex = 0;
-  return {
-    resolveCalls,
-    checkCalls,
-    resolveService: async (sessionId) => {
-      resolveCalls.push(sessionId);
-      return options.resolution ?? { ok: true, service: allowAllService };
-    },
-    checkService: (_service, rawCwd) => {
-      checkCalls.push(rawCwd);
-      return options.check
-        ? options.check(rawCwd, checkIndex++)
-        : { ok: true, state: "allow" };
-    },
+/** A normalizer that throws for one target value; otherwise an identity function. */
+function throwingNormalize(target: string): NormalizePath {
+  return (value) => {
+    if (value === target) {
+      throw new Error("normalizer exploded");
+    }
+    return value;
   };
 }
 
-describe("per-value classification", () => {
-  it("queries every non-empty string raw, including whitespace and dot paths", async () => {
-    const deps = createDepsStub();
-    const input = { cwd: "  ", other: { cwd: "." }, list: [{ cwd: "C:\\outside" }] };
+describe("posix per-value normalization (injected path.posix.normalize)", () => {
+  const cwd = "/work/project";
 
-    const outcome = await evaluateCwdOccurrences(input, SESSION_ID, deps);
-
-    // Raw values passed untouched: no trim, no rewrite.
-    assert.deepEqual(deps.checkCalls, ["  ", ".", "C:\\outside"]);
+  it("allows the same absolute path", () => {
+    const outcome = evaluateCwdOccurrences({ cwd: "/work/project" }, cwd, posixNormalize);
     assert.deepEqual(
       outcome.evaluations.map((e) => ({ state: e.state, reason: e.reason })),
-      [
-        { state: "allow", reason: "policy" },
-        { state: "allow", reason: "policy" },
-        { state: "allow", reason: "policy" },
-      ],
-    );
-    assert.equal(outcome.aggregate, "allow");
-    assert.equal(outcome.scanError, undefined);
-  });
-
-  it("allows undefined, null, and empty-string without any query or import", async () => {
-    const deps = createDepsStub();
-    const input = { cwd: undefined, a: { cwd: null }, b: { cwd: "" } };
-
-    const outcome = await evaluateCwdOccurrences(input, SESSION_ID, deps);
-
-    assert.deepEqual(deps.resolveCalls, []);
-    assert.deepEqual(deps.checkCalls, []);
-    assert.deepEqual(
-      outcome.evaluations.map((e) => ({ state: e.state, reason: e.reason })),
-      [
-        { state: "allow", reason: "empty or missing cwd" },
-        { state: "allow", reason: "empty or missing cwd" },
-        { state: "allow", reason: "empty or missing cwd" },
-      ],
+      [{ state: "allow", reason: "matches current directory" }],
     );
     assert.equal(outcome.aggregate, "allow");
   });
 
-  it("asks for non-string types without querying and without importing", async () => {
-    const deps = createDepsStub();
-    const input = { cwd: 42, a: { cwd: true }, b: { cwd: { path: "../o" } }, c: { cwd: ["../a"] } };
+  it("allows both sides with collapsible dot segments and duplicate separators", () => {
+    // Both sides fold to "/work/project" under posix normalization.
+    const outcome = evaluateCwdOccurrences(
+      { cwd: "/work/other/../project", tasks: [{ cwd: "//work///project" }] },
+      "/work/./project",
+      posixNormalize,
+    );
+    assert.ok(outcome.evaluations.every((e) => e.state === "allow"));
+    assert.equal(outcome.aggregate, "allow");
+  });
 
-    const outcome = await evaluateCwdOccurrences(input, SESSION_ID, deps);
+  it("asks for subdirectories, parent directories, and unrelated directories", () => {
+    for (const input of ["/work/project/sub", "/work", "/other/place"]) {
+      const outcome = evaluateCwdOccurrences({ cwd: input }, cwd, posixNormalize);
+      assert.equal(outcome.evaluations[0]?.state, "ask", input);
+      assert.equal(outcome.evaluations[0]?.reason, "differs from current directory", input);
+    }
+    assert.ok(
+      evaluateCwdOccurrences({ cwd: "/work/project/sub" }, cwd, posixNormalize).aggregate === "ask",
+    );
+  });
 
-    assert.deepEqual(deps.resolveCalls, []);
-    assert.deepEqual(deps.checkCalls, []);
-    assert.ok(outcome.evaluations.every((e) => e.state === "ask"));
-    assert.match(outcome.evaluations[0]?.reason ?? "", /invalid cwd type: 42/);
-    assert.match(outcome.evaluations[2]?.reason ?? "", /invalid cwd type/);
+  it("does not treat dot as the absolute current directory and does not align relative with absolute", () => {
+    assert.equal(evaluateCwdOccurrences({ cwd: "." }, cwd, posixNormalize).aggregate, "ask");
+    assert.equal(evaluateCwdOccurrences({ cwd: "sub" }, cwd, posixNormalize).aggregate, "ask");
+  });
+
+  it("asks when only the trailing slash differs", () => {
+    const outcome = evaluateCwdOccurrences({ cwd: "/work/project/" }, cwd, posixNormalize);
     assert.equal(outcome.aggregate, "ask");
   });
 
-  it("does not query the inside of a cwd object or array", async () => {
-    const deps = createDepsStub();
-    const input = { cwd: { cwd: "../inner" }, list: { cwd: [{ cwd: "../also" }] } };
-
-    const outcome = await evaluateCwdOccurrences(input, SESSION_ID, deps);
-
-    // The object/array cwd values are non-string types: ask, no inner query.
-    assert.deepEqual(deps.resolveCalls, []);
-    assert.deepEqual(deps.checkCalls, []);
-    assert.equal(outcome.evaluations.length, 2);
-    assert.ok(outcome.evaluations.every((e) => e.state === "ask"));
+  it("asks when only the letter case differs", () => {
+    const outcome = evaluateCwdOccurrences({ cwd: "/work/Project" }, cwd, posixNormalize);
+    assert.equal(outcome.aggregate, "ask");
   });
 
-  it("does not import the module when no non-empty string cwd exists", async () => {
-    const deps = createDepsStub();
-    await evaluateCwdOccurrences({ cwd: "", note: "nothing to check" }, SESSION_ID, deps);
-    assert.deepEqual(deps.resolveCalls, []);
+  it("treats backslashes as plain characters, not separators", () => {
+    const outcome = evaluateCwdOccurrences({ cwd: "/work\\project" }, cwd, posixNormalize);
+    assert.equal(outcome.aggregate, "ask");
   });
 });
 
-describe("service resolution and fail-closed degradation", () => {
-  it("degrades string items to ask when the service is unavailable", async () => {
-    const deps = createDepsStub({
-      resolution: { ok: false, reason: "permissions service accessor is unavailable" },
-    });
-    const input = { cwd: "../a", empty: { cwd: "" }, typed: { cwd: 7 } };
+describe("win32 per-value normalization (injected path.win32.normalize)", () => {
+  const normalize: NormalizePath = (value) => path.win32.normalize(value);
+  const cwd = "C:\\work\\project";
 
-    const outcome = await evaluateCwdOccurrences(input, SESSION_ID, deps);
-
-    assert.deepEqual(
-      outcome.evaluations.map((e) => ({ state: e.state, reason: e.reason })),
-      [
-        { state: "ask", reason: "service unavailable: permissions service accessor is unavailable" },
-        { state: "allow", reason: "empty or missing cwd" },
-        { state: "ask", reason: expectInvalidTypeReason(7) },
-      ],
-    );
-    assert.equal(outcome.aggregate, "ask");
-    assert.deepEqual(deps.checkCalls, []);
+  it("allows the same drive-absolute path", () => {
+    const outcome = evaluateCwdOccurrences({ cwd: "C:\\work\\project" }, cwd, normalize);
+    assert.equal(outcome.aggregate, "allow");
   });
 
-  it("degrades per-item when a query throws, and continues with the remaining items", async () => {
-    const deps = createDepsStub({
-      check: (_raw, index) =>
-        index === 0
-          ? { ok: false, reason: "permission query failed: boom" }
-          : { ok: true, state: "allow" },
-    });
-    const input = { first: { cwd: "../a" }, second: { cwd: "../b" } };
-
-    const outcome = await evaluateCwdOccurrences(input, SESSION_ID, deps);
-
-    assert.deepEqual(deps.checkCalls, ["../a", "../b"]);
-    assert.deepEqual(
-      outcome.evaluations.map((e) => ({ state: e.state, reason: e.reason })),
-      [
-        { state: "ask", reason: "permission query failed: boom" },
-        { state: "allow", reason: "policy" },
-      ],
+  it("allows mixed slashes and folded dot segments on both sides", () => {
+    // Forward slashes fold to backslashes; dot segments collapse on both sides.
+    const outcome = evaluateCwdOccurrences(
+      { cwd: "C:/work/project", tasks: [{ cwd: "C:\\work\\other\\..\\project\\." }] },
+      "C:\\work\\project\\.",
+      normalize,
     );
+    assert.ok(outcome.evaluations.every((e) => e.state === "allow"));
+    assert.equal(outcome.aggregate, "allow");
+  });
+
+  it("asks for a different drive, a subdirectory, and dot against an absolute cwd", () => {
+    for (const input of ["D:\\work\\project", "C:\\work\\project\\sub", "."]) {
+      const outcome = evaluateCwdOccurrences({ cwd: input }, cwd, normalize);
+      assert.equal(outcome.evaluations[0]?.state, "ask", input);
+      assert.equal(outcome.evaluations[0]?.reason, "differs from current directory", input);
+    }
+  });
+
+  it("does not align a drive-relative path with a drive-absolute path", () => {
+    const outcome = evaluateCwdOccurrences({ cwd: "C:project" }, cwd, normalize);
     assert.equal(outcome.aggregate, "ask");
   });
 
-  it("degrades to ask when the returned state is invalid", async () => {
-    const deps = createDepsStub({
-      check: () => ({ ok: false, reason: 'invalid permission state: "ALLOW"' }),
-    });
-    const outcome = await evaluateCwdOccurrences({ cwd: "../a" }, SESSION_ID, deps);
+  it("asks when the drive letter or a directory name differs only in case", () => {
+    for (const input of ["c:\\work\\project", "C:\\Work\\project"]) {
+      const outcome = evaluateCwdOccurrences({ cwd: input }, cwd, normalize);
+      assert.equal(outcome.evaluations[0]?.state, "ask", input);
+    }
+  });
+
+  it("asks when only the trailing backslash differs", () => {
+    const outcome = evaluateCwdOccurrences({ cwd: "C:\\work\\project\\" }, cwd, normalize);
+    assert.equal(outcome.aggregate, "ask");
+  });
+
+  it("handles UNC paths by normalized equality only", () => {
+    const uncCwd = "\\\\server\\share\\dir";
+    assert.equal(
+      evaluateCwdOccurrences({ cwd: "\\\\server\\share\\dir" }, uncCwd, normalize).aggregate,
+      "allow",
+    );
+    assert.equal(
+      evaluateCwdOccurrences({ cwd: "\\\\server\\share\\other" }, uncCwd, normalize).aggregate,
+      "ask",
+    );
+  });
+});
+
+describe("platform-independent value handling", () => {
+  const cwd = "/work/project";
+
+  it("does not trim or rewrite raw strings: whitespace-only values differ", () => {
+    const outcome = evaluateCwdOccurrences({ cwd: "  " }, cwd, posixNormalize);
     assert.equal(outcome.evaluations[0]?.state, "ask");
-    assert.match(outcome.evaluations[0]?.reason ?? "", /invalid permission state/);
+    assert.equal(outcome.evaluations[0]?.value, "  ");
   });
 
-  it("resolves the service once per tool call and again on the next call", async () => {
-    const deps = createDepsStub();
-    const input = { cwd: "../a", second: { cwd: "../b" } };
-
-    await evaluateCwdOccurrences(input, SESSION_ID, deps);
-    assert.deepEqual(deps.resolveCalls, [SESSION_ID]);
-
-    await evaluateCwdOccurrences(input, "sess-guard-0002", deps);
-    assert.deepEqual(deps.resolveCalls, [SESSION_ID, "sess-guard-0002"]);
+  it("allows only values that are truly equal after normalization", () => {
+    // "/work/project" is the only raw value that stays equal after normalize.
+    for (const nearMiss of ["/work/projects", "/work/project/", " /work/project"]) {
+      assert.equal(evaluateCwdOccurrences({ cwd: nearMiss }, cwd, posixNormalize).aggregate, "ask", nearMiss);
+    }
   });
 
-  it("retries resolution on later calls after an unavailable service", async () => {
-    const failing = createDepsStub({
-      resolution: { ok: false, reason: "not published" },
-    });
-    const input = { cwd: "../a" };
-    const failing1 = await evaluateCwdOccurrences(input, SESSION_ID, failing);
-    assert.equal(failing1.evaluations[0]?.state, "ask");
+  it("preserves original values and field paths in the evaluations", () => {
+    const outcome = evaluateCwdOccurrences({ cwd: "  ", tasks: [{ cwd: "/other" }] }, cwd, posixNormalize);
+    assert.deepEqual(
+      outcome.evaluations.map((e) => ({ path: e.path, value: e.value, state: e.state })),
+      [
+        { path: `$["cwd"]`, value: "  ", state: "ask" },
+        { path: `$["tasks"][0]["cwd"]`, value: "/other", state: "ask" },
+      ],
+    );
+  });
+});
 
-    const succeeding = createDepsStub({
-      check: () => ({ ok: true, state: "allow" }),
-    });
-    const outcome = await evaluateCwdOccurrences(input, SESSION_ID, succeeding);
-    assert.equal(outcome.evaluations[0]?.state, "allow");
+describe("empty, missing, and non-string values", () => {
+  it("allows undefined, null, and empty-string", () => {
+    const outcome = evaluateCwdOccurrences(
+      { cwd: undefined, a: { cwd: null }, b: { cwd: "" } },
+      "/w",
+      posixNormalize,
+    );
+    assert.ok(outcome.evaluations.every((e) => e.state === "allow" && e.reason === "empty or missing cwd"));
+    assert.equal(outcome.aggregate, "allow");
+  });
+
+  it("allows a call with no cwd occurrences at all", () => {
+    const outcome = evaluateCwdOccurrences({ prompt: "no cwd here" }, "/w", posixNormalize);
+    assert.deepEqual(outcome.evaluations, []);
+    assert.equal(outcome.aggregate, "allow");
+  });
+
+  it("asks for non-string types; cwd objects and arrays stay leaves", () => {
+    const input = { cwd: 42, a: { cwd: true }, b: { cwd: { cwd: "../inner" } }, c: { cwd: ["../a"] } };
+    const outcome = evaluateCwdOccurrences(input, "/w", posixNormalize);
+
+    assert.equal(outcome.evaluations.length, 4);
+    assert.ok(outcome.evaluations.every((e) => e.state === "ask"));
+    assert.match(outcome.evaluations[0]?.reason ?? "", /invalid cwd type: 42/);
+    // No occurrence from inside the cwd object or array: leaf handling kept.
+    assert.deepEqual(
+      outcome.evaluations.map((e) => e.path),
+      [`$["cwd"]`, `$["a"]["cwd"]`, `$["b"]["cwd"]`, `$["c"]["cwd"]`],
+    );
+    assert.equal(outcome.aggregate, "ask");
+  });
+});
+
+describe("no caching across calls", () => {
+  it("changing the current cwd between calls flips the same input from allow to ask", () => {
+    const input = { cwd: "/work/project" };
+
+    const withSame = evaluateCwdOccurrences(input, "/work/project", posixNormalize);
+    assert.equal(withSame.aggregate, "allow");
+
+    const withChanged = evaluateCwdOccurrences(input, "/elsewhere", posixNormalize);
+    assert.equal(withChanged.aggregate, "ask");
+  });
+});
+
+describe("normalization failure handling", () => {
+  it("asks and continues when the input side throws", () => {
+    const outcome = evaluateCwdOccurrences(
+      { first: { cwd: "../throw" }, second: { cwd: "/w" } },
+      "/w",
+      throwingNormalize("../throw"),
+    );
+
+    assert.deepEqual(
+      outcome.evaluations.map((e) => ({ state: e.state, reason: e.reason })),
+      [
+        { state: "ask", reason: "path normalization failed: normalizer exploded" },
+        { state: "allow", reason: "matches current directory" },
+      ],
+    );
+    assert.equal(outcome.aggregate, "ask");
+  });
+
+  it("asks and continues when the current-cwd side throws", () => {
+    const outcome = evaluateCwdOccurrences(
+      { first: { cwd: "../a" }, empty: { cwd: "" }, typed: { cwd: 7 } },
+      "/hostile-cwd",
+      throwingNormalize("/hostile-cwd"),
+    );
+
+    assert.equal(outcome.evaluations[0]?.state, "ask");
+    assert.match(outcome.evaluations[0]?.reason ?? "", /path normalization failed/);
+    assert.equal(outcome.evaluations[1]?.state, "allow", "empty values are unaffected");
+    assert.equal(outcome.evaluations[2]?.state, "ask", "invalid types keep their own ask");
+    assert.equal(outcome.aggregate, "ask");
   });
 });
 
 describe("strict merge", () => {
-  const matrixCases: {
-    name: string;
-    states: Array<"allow" | "ask" | "deny">;
-    expected: "allow" | "ask" | "deny";
-  }[] = [
-    { name: "all allow", states: ["allow", "allow", "allow"], expected: "allow" },
-    { name: "single ask", states: ["allow", "ask"], expected: "ask" },
-    { name: "single deny", states: ["allow", "deny", "allow"], expected: "deny" },
-    { name: "deny dominates ask", states: ["ask", "ask", "deny"], expected: "deny" },
-    { name: "deny first", states: ["deny", "ask", "allow"], expected: "deny" },
-    { name: "ask first then allow", states: ["ask", "allow"], expected: "ask" },
-  ];
+  const cwd = "/work/project";
 
-  for (const testCase of matrixCases) {
-    it(`merges ${testCase.states.join("/")} into ${testCase.expected} (${testCase.name})`, async () => {
-      const deps = createDepsStub({
-        check: (_raw, index) => {
-          const state = testCase.states[index];
-          return state === undefined ? { ok: true, state: "allow" } : { ok: true, state };
-        },
-      });
+  it("merges allow/ask combinations without short-circuiting", () => {
+    const cases: { inputs: string[]; expected: "allow" | "ask" }[] = [
+      { inputs: ["/work/project", "/work/project", "/work/project"], expected: "allow" },
+      { inputs: ["/work/project", "/other"], expected: "ask" },
+      { inputs: ["/other", "/work/project"], expected: "ask" },
+      { inputs: ["/other", "/another"], expected: "ask" },
+    ];
+    for (const testCase of cases) {
       const input: Record<string, unknown> = {};
-      testCase.states.forEach((_state, index) => {
-        input[`item${index}`] = { cwd: `../dir${index}` };
+      testCase.inputs.forEach((value, index) => {
+        input[`item${index}`] = { cwd: value };
       });
+      const outcome = evaluateCwdOccurrences(input, cwd, posixNormalize);
+      assert.equal(outcome.aggregate, testCase.expected, testCase.inputs.join("|"));
+    }
+  });
 
-      const outcome = await evaluateCwdOccurrences(input, SESSION_ID, deps);
-
-      assert.equal(outcome.aggregate, testCase.expected);
-      // Every item was queried: no short-circuit even after deny.
-      assert.equal(deps.checkCalls.length, testCase.states.length);
-    });
-  }
-
-  it("returns allow for an empty occurrence set", async () => {
-    const deps = createDepsStub();
-    const outcome = await evaluateCwdOccurrences({ prompt: "no cwd here" }, SESSION_ID, deps);
+  it("returns allow for an empty occurrence set", () => {
+    const outcome = evaluateCwdOccurrences({ prompt: "no cwd here" }, cwd, posixNormalize);
     assert.deepEqual(outcome.evaluations, []);
     assert.equal(outcome.aggregate, "allow");
-    assert.deepEqual(deps.resolveCalls, []);
   });
 });
 
-describe("safety invariants", () => {
-  it("does not modify the original input (frozen)", async () => {
-    const deps = createDepsStub();
-    const input = Object.freeze({
-      cwd: Object.freeze("../a"),
-      tasks: Object.freeze([Object.freeze({ cwd: "../b" })]),
-    });
+describe("scan errors force a hard deny", () => {
+  const cwd = "/work/project";
 
-    const outcome = await evaluateCwdOccurrences(input, SESSION_ID, deps);
-
-    assert.ok(Object.isFrozen(input));
-    assert.ok(Object.isFrozen(input.tasks));
-    assert.equal(outcome.aggregate, "allow");
-    assert.deepEqual(deps.checkCalls, ["../a", "../b"]);
-  });
-
-  it("blocks on scan errors: outcome carries scanError while safe parts still evaluate", async () => {
-    // The safe branch is inserted first so it is collected before the hostile
-    // getter aborts the traversal (Object.keys order = insertion).
-    const deps = createDepsStub();
+  function hostileInput(): Record<string, unknown> {
     const input: Record<string, unknown> = {};
-    input["before"] = { cwd: "../ok" };
+    input["before"] = { cwd: cwd };
     Object.defineProperty(input, "danger", {
       enumerable: true,
       configurable: true,
@@ -265,24 +275,74 @@ describe("safety invariants", () => {
         throw new Error("scan exploded");
       },
     });
+    return input;
+  }
 
-    const outcome = await evaluateCwdOccurrences(input, SESSION_ID, deps);
-
+  it("denies on a scan error even when the collected items are all allow", () => {
+    const outcome = evaluateCwdOccurrences(hostileInput(), cwd, posixNormalize);
     assert.ok(outcome.scanError);
     assert.match(outcome.scanError.message, /scan exploded/);
-    assert.equal(outcome.evaluations.length, 1);
-    assert.equal(outcome.evaluations[0]?.state, "allow");
-    // Fail-closed floor: the incompletely scanned call is at least ask.
-    assert.equal(outcome.aggregate, "ask");
+    assert.equal(outcome.evaluations.length, 1, "the safe branch was still collected");
+    assert.equal(outcome.evaluations[0]?.state, "allow", "collected items keep their own state");
+    assert.equal(outcome.aggregate, "deny");
   });
 
-  it("keeps the default dependency set functional", async () => {
-    const deps = createDefaultCwdGuardDeps(defaultPermissionModuleImporter);
-    assert.equal(typeof deps.resolveService, "function");
-    assert.equal(typeof deps.checkService, "function");
+  it("denies on a scan error even with an empty occurrence set", () => {
+    const input: Record<string, unknown> = {};
+    Object.defineProperty(input, "danger", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        throw new Error("scan exploded");
+      },
+    });
+    const outcome = evaluateCwdOccurrences(input, cwd, posixNormalize);
+    assert.ok(outcome.scanError);
+    assert.deepEqual(outcome.evaluations, []);
+    assert.equal(outcome.aggregate, "deny");
+  });
+
+  it("denies on a scan error even when a collected item is ask", () => {
+    const input: Record<string, unknown> = {};
+    input["before"] = { cwd: "../outside" };
+    Object.defineProperty(input, "danger", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        throw new Error("scan exploded");
+      },
+    });
+    const outcome = evaluateCwdOccurrences(input, cwd, posixNormalize);
+    assert.ok(outcome.scanError);
+    assert.equal(outcome.evaluations[0]?.state, "ask");
+    assert.equal(outcome.aggregate, "deny");
+  });
+
+  it("blocks on depth-limited inputs", () => {
+    let deep: unknown = { cwd: cwd };
+    for (let index = 0; index < 12; index++) {
+      deep = { nested: deep };
+    }
+    const outcome = evaluateCwdOccurrences(deep, cwd, posixNormalize);
+    assert.ok(outcome.scanError);
+    assert.match(outcome.scanError.message, /maximum scan depth/);
+    assert.equal(outcome.aggregate, "deny");
   });
 });
 
-function expectInvalidTypeReason(value: number): string {
-  return `invalid cwd type: ${JSON.stringify(value)}`;
-}
+describe("safety invariants", () => {
+  it("does not modify the original input (frozen)", () => {
+    const input = Object.freeze({
+      cwd: Object.freeze("/work/project"),
+      tasks: Object.freeze([Object.freeze({ cwd: "../b" })]),
+    });
+
+    const outcome = evaluateCwdOccurrences(input, "/work/project", posixNormalize);
+
+    assert.ok(Object.isFrozen(input));
+    assert.ok(Object.isFrozen(input.tasks));
+    assert.equal(outcome.aggregate, "ask");
+    assert.equal(outcome.evaluations[0]?.state, "allow");
+    assert.equal(outcome.evaluations[1]?.state, "ask");
+  });
+});

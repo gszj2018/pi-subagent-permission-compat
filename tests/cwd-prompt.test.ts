@@ -17,7 +17,7 @@ function evaluation(overrides: Partial<CwdEvaluation> = {}): CwdEvaluation {
     path: `$["cwd"]`,
     value: "../outside",
     state: "ask",
-    reason: "policy",
+    reason: "differs from current directory",
     ...overrides,
   };
 }
@@ -58,10 +58,10 @@ describe("value and line formatting", () => {
     assert.equal(formatCwdValue(Symbol("s")), "Symbol(s)");
   });
 
-  it("renders evaluation lines with path, safe value, state, and non-policy reason", () => {
+  it("renders evaluation lines with path, safe value, state, and non-empty reason", () => {
     assert.equal(
       formatCwdEvaluation(evaluation()),
-      `$["cwd"] = "../outside" [ask]`,
+      `$["cwd"] = "../outside" [ask: differs from current directory]`,
     );
     assert.equal(
       formatCwdEvaluation(evaluation({ state: "allow", reason: "empty or missing cwd" })),
@@ -73,8 +73,13 @@ describe("value and line formatting", () => {
     );
     // Multi-line reasons are flattened to one line.
     assert.equal(
-      formatCwdEvaluation(evaluation({ reason: "service unavailable: broken\nnext line" })),
-      `$["cwd"] = "../outside" [ask: service unavailable: broken next line]`,
+      formatCwdEvaluation(evaluation({ reason: "path normalization failed: broken\nnext line" })),
+      `$["cwd"] = "../outside" [ask: path normalization failed: broken next line]`,
+    );
+    // An empty reason shows the bare state without a suffix.
+    assert.equal(
+      formatCwdEvaluation(evaluation({ reason: "" })),
+      `$["cwd"] = "../outside" [ask]`,
     );
   });
 });
@@ -83,7 +88,12 @@ describe("prompt title", () => {
   it("contains the label, tool name, current directory, and every evaluation line", () => {
     const title = buildCwdPromptTitle("subagent", "/workspace/project", [
       evaluation({ path: `$["cwd"]`, value: "", state: "allow", reason: "empty or missing cwd" }),
-      evaluation({ path: `$["tasks"][0]["cwd"]`, value: "../shared", state: "ask", reason: "policy" }),
+      evaluation({
+        path: `$["tasks"][0]["cwd"]`,
+        value: "../shared",
+        state: "ask",
+        reason: "differs from current directory",
+      }),
       evaluation({
         path: `$["tasks"][1]["cwd"]`,
         value: { path: "../other" },
@@ -97,7 +107,7 @@ describe("prompt title", () => {
     assert.equal(lines[1], "Tool: subagent");
     assert.equal(lines[2], 'Current directory: "/workspace/project"');
     assert.equal(lines[3], `$["cwd"] = "" [allow: empty or missing cwd]`);
-    assert.equal(lines[4], `$["tasks"][0]["cwd"] = "../shared" [ask]`);
+    assert.equal(lines[4], `$["tasks"][0]["cwd"] = "../shared" [ask: differs from current directory]`);
     assert.equal(lines[5], `$["tasks"][1]["cwd"] = {"path":"../other"} [ask: invalid cwd type]`);
     assert.equal(lines[6], "Allow this tool call once?");
   });
@@ -189,10 +199,16 @@ describe("promptCwdApproval", () => {
 
   it("shows the full multi-cwd title in a single select call", async () => {
     const stub = selectStub(() => ALLOW_ONCE_OPTION);
+    // Normal evaluations are only allow/ask; a deny never reaches the prompt.
     const evaluations = [
-      evaluation({ path: `$["cwd"]`, value: "../a", state: "allow", reason: "policy" }),
-      evaluation({ path: `$["tasks"][0]["cwd"]`, value: "../b", state: "deny", reason: "policy" }),
-      evaluation({ path: `$["tasks"][1]["cwd"]`, value: "../c", state: "ask", reason: "policy" }),
+      evaluation({ path: `$["cwd"]`, value: "/w", state: "allow", reason: "matches current directory" }),
+      evaluation({
+        path: `$["tasks"][0]["cwd"]`,
+        value: "../b",
+        state: "ask",
+        reason: "differs from current directory",
+      }),
+      evaluation({ path: `$["tasks"][1]["cwd"]`, value: "", state: "allow", reason: "empty or missing cwd" }),
     ];
 
     const outcome = await promptCwdApproval(
@@ -201,7 +217,7 @@ describe("promptCwdApproval", () => {
     );
 
     assert.equal(stub.calls.length, 1);
-    assert.ok(stub.calls[0]?.title.includes(`$["tasks"][0]["cwd"] = "../b" [deny]`));
+    assert.ok(stub.calls[0]?.title.includes(`$["tasks"][0]["cwd"] = "../b" [ask: differs from current directory]`));
     assert.deepEqual(outcome, { approved: true });
   });
 });

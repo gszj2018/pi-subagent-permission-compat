@@ -8,24 +8,21 @@
  *    detects whether this process is a root session and publishes
  *    `PI_SUBAGENT_PARENT_SESSION`; on shutdown it cleans up the value it owns.
  * 2. Subagent tool-call cwd protection: `tool_call` events for subagent-ish
- *    tools are scanned for every `cwd` field, each value is queried against
- *    the `external_directory` permission surface, and the merged result
- *    allows, asks once via `ctx.ui.select`, or blocks the whole call.
+ *    tools are scanned for every `cwd` field; each non-empty string is
+ *    compared with the event context's cwd after lexical normalization, and
+ *    the merged result allows, asks once via `ctx.ui.select`, or blocks the
+ *    whole call.
  *
  * The factories only register handlers and assemble dependencies; importing
  * these modules or calling the factories never mutates the environment and
- * never queries the permission system.
+ * never touches a UI.
  */
 
+import { normalize } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import {
-  defaultPermissionModuleImporter,
-  describeUnknown,
-} from "./permissions-client.ts";
-import {
-  createDefaultCwdGuardDeps,
   evaluateCwdOccurrences,
-  type CwdGuardDeps,
+  type NormalizePath,
 } from "./cwd-guard.ts";
 import {
   EXTENSION_PROMPT_LABEL,
@@ -53,8 +50,8 @@ export interface ParentSessionEnvFeatureOptions {
 
 /** Options of `createCwdGuardFeature`. Always explicit, no defaults. */
 export interface CwdGuardFeatureOptions {
-  /** Permission query dependencies of the cwd guard. */
-  guardDeps: CwdGuardDeps;
+  /** Path normalizer used for both sides of the cwd comparison. */
+  normalizePath: NormalizePath;
   /** Resolves the approval selector for the current event context. */
   select: SelectResolver;
 }
@@ -65,8 +62,8 @@ export interface ExtensionOptions {
    * must pass an in-memory record to avoid touching the host environment.
    */
   env: SubagentEnv;
-  /** Permission query dependencies of the cwd guard. Always explicit. */
-  guardDeps: CwdGuardDeps;
+  /** Path normalizer used for both sides of the cwd comparison. Always explicit. */
+  normalizePath: NormalizePath;
   /** Resolves the approval selector for the current event context. Always explicit. */
   select: SelectResolver;
 }
@@ -92,7 +89,7 @@ export function createParentSessionEnvFeature(
       ctx.ui.notify(
         `${EXTENSION_PROMPT_LABEL} Received an invalid session ID; ` +
           `${PARENT_SESSION_ENV_VAR} was not published. ` +
-          "Subagent cwd permission checks remain active.",
+          "Subagent cwd checks remain active.",
         "warning",
       );
     }
@@ -106,8 +103,9 @@ export function createParentSessionEnvFeature(
 /**
  * Capability 2: subagent tool-call cwd protection.
  *
- * Registers the `tool_call` handler that scans, queries, merges, and (for
- * asks with UI) prompts for one-shot approval.
+ * Registers the `tool_call` handler that scans, compares each value with the
+ * current event cwd, merges, and (for asks with UI) prompts for one-shot
+ * approval.
  */
 export function createCwdGuardFeature(
   pi: ExtensionAPI,
@@ -118,8 +116,7 @@ export function createCwdGuardFeature(
       return undefined;
     }
 
-    const sessionId = ctx.sessionManager.getSessionId();
-    const outcome = await evaluateCwdOccurrences(event.input, sessionId, options.guardDeps);
+    const outcome = evaluateCwdOccurrences(event.input, ctx.cwd, options.normalizePath);
 
     // An incompletely scanned input is a hard block regardless of UI.
     if (outcome.scanError !== undefined) {
@@ -134,13 +131,11 @@ export function createCwdGuardFeature(
     }
 
     if (outcome.aggregate === "deny") {
-      // A policy deny cannot be overridden by the user.
-      const denied = outcome.evaluations
-        .filter((evaluation) => evaluation.state === "deny")
-        .map((evaluation) => `${evaluation.path} = ${describeUnknown(evaluation.value)}`);
+      // Defensive: per-value evaluation can no longer produce a deny; any
+      // deny here is a generic hard refusal, not a permission-policy result.
       return {
         block: true,
-        reason: `${EXTENSION_PROMPT_LABEL} Subagent working directory denied by permission policy: ${denied.join("; ")}`,
+        reason: `${EXTENSION_PROMPT_LABEL} Subagent tool call blocked: the working directories could not be approved; the call is denied.`,
       };
     }
 
@@ -199,14 +194,14 @@ export function createSubagentPermissionCompatExtension(
   options: ExtensionOptions,
 ): void {
   createParentSessionEnvFeature(pi, { env: options.env });
-  createCwdGuardFeature(pi, { guardDeps: options.guardDeps, select: options.select });
+  createCwdGuardFeature(pi, { normalizePath: options.normalizePath, select: options.select });
 }
 
 /** Default extension factory expected by the Pi extension loader. */
 export default function createExtension(pi: ExtensionAPI): void {
   createSubagentPermissionCompatExtension(pi, {
     env: process.env,
-    guardDeps: createDefaultCwdGuardDeps(defaultPermissionModuleImporter),
+    normalizePath: normalize,
     select: (ctx) => (title, options, opts) => ctx.ui.select(title, options, opts),
   });
 }

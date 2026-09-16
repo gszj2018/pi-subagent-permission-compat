@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 
 import type {
   ExtensionAPI,
@@ -13,6 +14,7 @@ import createExtension, {
   createCwdGuardFeature,
   createParentSessionEnvFeature,
   createSubagentPermissionCompatExtension,
+  type ExtensionOptions,
   type SelectResolver,
 } from "../extensions/index.ts";
 import {
@@ -23,12 +25,7 @@ import {
   ALLOW_ONCE_OPTION,
   DENY_OPTION,
 } from "../extensions/cwd-prompt.ts";
-import type { CwdGuardDeps } from "../extensions/cwd-guard.ts";
-import type {
-  ExternalDirectoryCheck,
-  PermissionsService,
-  ServiceResolution,
-} from "../extensions/permissions-client.ts";
+import type { NormalizePath } from "../extensions/cwd-guard.ts";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -51,6 +48,14 @@ function createStubPi(): StubPi {
 
 /** Standard production-style resolver: use the event context's own select. */
 const contextSelect: SelectResolver = (ctx) => ctx.ui.select;
+
+const posixNormalize: NormalizePath = (value) => path.posix.normalize(value);
+const win32Normalize: NormalizePath = (value) => path.win32.normalize(value);
+
+/** Base options with an in-memory env and an explicit normalizer. */
+function baseOptions(normalizePath: NormalizePath = posixNormalize): Pick<ExtensionOptions, "normalizePath" | "select"> {
+  return { normalizePath, select: contextSelect };
+}
 
 interface SessionStub {
   ctx: ExtensionContext;
@@ -84,44 +89,16 @@ function fireSessionShutdown(pi: StubPi, reason: "quit" | "reload" | "new" | "re
   handler({ type: "session_shutdown", reason }, {} as ExtensionContext);
 }
 
-interface GuardStubOptions {
-  resolution?: ServiceResolution;
-  check?: (rawCwd: string, index: number) => ExternalDirectoryCheck;
-}
-
-function createGuardDepsStub(options: GuardStubOptions = {}): CwdGuardDeps & {
-  resolveCalls: string[];
-  checkCalls: string[];
-} {
-  const resolveCalls: string[] = [];
-  const checkCalls: string[] = [];
-  let checkIndex = 0;
-  const allowAllService = {
-    checkPermission: () => ({ state: "allow" }),
-  } as unknown as PermissionsService;
-  return {
-    resolveCalls,
-    checkCalls,
-    resolveService: async (sessionId) => {
-      resolveCalls.push(sessionId);
-      return options.resolution ?? { ok: true, service: allowAllService };
-    },
-    checkService: (_service, rawCwd) => {
-      checkCalls.push(rawCwd);
-      return options.check
-        ? options.check(rawCwd, checkIndex++)
-        : { ok: true, state: "allow" };
-    },
-  };
-}
-
 interface ToolCallStub {
   ctx: ExtensionContext;
   selectCalls: { title: string; options: string[] }[];
 }
 
+/**
+ * Tool-call context whose session ID getter is intentionally not callable:
+ * the tool_call handler must decide from the event cwd, never the session ID.
+ */
 function createToolCallContext(options: {
-  sessionId?: string;
   hasUI?: boolean;
   cwd?: string;
   select?: (title: string, options: string[]) => Promise<string | undefined> | string | undefined;
@@ -130,7 +107,9 @@ function createToolCallContext(options: {
   const selectCalls: { title: string; options: string[] }[] = [];
   const ctx = {
     sessionManager: {
-      getSessionId: () => options.sessionId ?? "sess-tool-0001",
+      getSessionId: () => {
+        throw new Error("session ID must not be read during tool_call");
+      },
     },
     hasUI: options.hasUI ?? true,
     cwd: options.cwd ?? "/workspace/project",
@@ -158,10 +137,6 @@ function fireToolCall(pi: StubPi, ctx: ExtensionContext, event: Partial<ToolCall
   ) as ToolCallEventResult | undefined | Promise<ToolCallEventResult | undefined>;
 }
 
-function allowAllGuard(): CwdGuardDeps & { resolveCalls: string[]; checkCalls: string[] } {
-  return createGuardDepsStub();
-}
-
 describe("extension registration", () => {
   it("default export is loadable and registers exactly the lifecycle and tool_call handlers", () => {
     const pi = createStubPi();
@@ -172,11 +147,7 @@ describe("extension registration", () => {
 
   it("injectable factory registers exactly the lifecycle and tool_call handlers", () => {
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, {
-      env: {},
-      guardDeps: createGuardDepsStub(),
-      select: contextSelect,
-    });
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
 
     assert.deepEqual([...pi.handlers.keys()].sort(), ["session_shutdown", "session_start", "tool_call"]);
   });
@@ -187,7 +158,7 @@ describe("extension registration", () => {
     assert.deepEqual([...envPi.handlers.keys()].sort(), ["session_shutdown", "session_start"]);
 
     const guardPi = createStubPi();
-    createCwdGuardFeature(guardPi.api, { guardDeps: createGuardDepsStub(), select: contextSelect });
+    createCwdGuardFeature(guardPi.api, { normalizePath: posixNormalize, select: contextSelect });
     assert.deepEqual([...guardPi.handlers.keys()], ["tool_call"]);
   });
 
@@ -196,11 +167,7 @@ describe("extension registration", () => {
     const injected: SubagentEnv = {};
 
     createExtension(createStubPi().api);
-    createSubagentPermissionCompatExtension(createStubPi().api, {
-      env: injected,
-      guardDeps: createGuardDepsStub(),
-      select: contextSelect,
-    });
+    createSubagentPermissionCompatExtension(createStubPi().api, { env: injected, ...baseOptions() });
 
     assert.deepEqual({ ...process.env }, before);
     assert.deepEqual(injected, {});
@@ -211,11 +178,7 @@ describe("minimal lifecycle through the event host (injected env)", () => {
   it("session_start publishes and session_shutdown cleans the owned value", () => {
     const env: SubagentEnv = {};
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, {
-      env,
-      guardDeps: createGuardDepsStub(),
-      select: contextSelect,
-    });
+    createSubagentPermissionCompatExtension(pi.api, { env, ...baseOptions() });
     const { ctx } = createSessionContext("sess-root-integration");
 
     fireSessionStart(pi, ctx);
@@ -228,11 +191,7 @@ describe("minimal lifecycle through the event host (injected env)", () => {
   it("repeat session_start without shutdown does not rewrite or lose ownership", () => {
     const env: SubagentEnv = {};
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, {
-      env,
-      guardDeps: createGuardDepsStub(),
-      select: contextSelect,
-    });
+    createSubagentPermissionCompatExtension(pi.api, { env, ...baseOptions() });
     const { ctx } = createSessionContext("sess-root-integration");
 
     fireSessionStart(pi, ctx);
@@ -244,11 +203,7 @@ describe("minimal lifecycle through the event host (injected env)", () => {
   it("child-hint start skips publication silently and never owns a value", () => {
     const env: SubagentEnv = { PI_IS_SUBAGENT: "1" };
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, {
-      env,
-      guardDeps: createGuardDepsStub(),
-      select: contextSelect,
-    });
+    createSubagentPermissionCompatExtension(pi.api, { env, ...baseOptions() });
     const { ctx, notifications } = createSessionContext("sess-child");
 
     fireSessionStart(pi, ctx);
@@ -263,11 +218,7 @@ describe("minimal lifecycle through the event host (injected env)", () => {
   it("invalid session ID emits a non-stdout diagnostic and publishes nothing", () => {
     const env: SubagentEnv = {};
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, {
-      env,
-      guardDeps: createGuardDepsStub(),
-      select: contextSelect,
-    });
+    createSubagentPermissionCompatExtension(pi.api, { env, ...baseOptions() });
     const { ctx, notifications } = createSessionContext("");
 
     fireSessionStart(pi, ctx);
@@ -280,12 +231,11 @@ describe("minimal lifecycle through the event host (injected env)", () => {
   });
 });
 
-describe("tool_call cwd protection (injected guard deps and select)", () => {
+describe("tool_call cwd protection (injected normalizePath and select)", () => {
   it("ignores tools that do not match the pattern without any evaluation", async () => {
-    const guard = allowAllGuard();
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, { env: {}, guardDeps: guard, select: contextSelect });
-    const { ctx } = createToolCallContext();
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
+    const { ctx, selectCalls } = createToolCallContext({ select: () => ALLOW_ONCE_OPTION });
 
     const result = await fireToolCall(pi, ctx, {
       toolName: "read",
@@ -293,62 +243,61 @@ describe("tool_call cwd protection (injected guard deps and select)", () => {
     });
 
     assert.equal(result, undefined);
-    assert.deepEqual(guard.resolveCalls, []);
-    assert.deepEqual(guard.checkCalls, []);
+    assert.deepEqual(selectCalls, []);
   });
 
-  it("returns undefined for an all-allow call without prompting", async () => {
-    const guard = allowAllGuard();
+  it("returns undefined for an all-allow call without prompting (posix)", async () => {
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, { env: {}, guardDeps: guard, select: contextSelect });
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions(posixNormalize) });
     const { ctx, selectCalls } = createToolCallContext({ select: () => ALLOW_ONCE_OPTION });
 
     const result = await fireToolCall(pi, ctx, {
       toolName: "subagent",
-      input: { cwd: "../outside" },
+      input: { cwd: "/workspace/project" },
     });
 
     assert.equal(result, undefined);
     assert.deepEqual(selectCalls, []);
-    assert.deepEqual(guard.checkCalls, ["../outside"]);
   });
 
-  it("blocks a policy deny without prompting and without letting the user override", async () => {
-    const guard = createGuardDepsStub({
-      check: () => ({ ok: true, state: "deny" }),
-    });
+  it("normalizes win32 paths through the injected normalizer (win32)", async () => {
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, { env: {}, guardDeps: guard, select: contextSelect });
-    const { ctx, selectCalls } = createToolCallContext({ select: () => ALLOW_ONCE_OPTION });
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions(win32Normalize) });
+    // Forward slashes fold to backslashes: the same directory, so allow.
+    const allowed = createToolCallContext({
+      cwd: "C:\\workspace\\project",
+      select: () => ALLOW_ONCE_OPTION,
+    });
+    assert.equal(
+      await fireToolCall(pi, allowed.ctx, { toolName: "subagent", input: { cwd: "C:/workspace/project" } }),
+      undefined,
+    );
+    assert.deepEqual(allowed.selectCalls, []);
 
-    const result = (await fireToolCall(pi, ctx, {
+    // A different drive stays ask and prompts.
+    const asking = createToolCallContext({ cwd: "C:\\workspace\\project", select: () => DENY_OPTION });
+    const result = (await fireToolCall(pi, asking.ctx, {
       toolName: "subagent",
-      input: { cwd: "../outside" },
+      input: { cwd: "D:\\workspace\\project" },
     })) as ToolCallEventResult;
-
-    assert.equal(result?.block, true);
-    assert.match(result?.reason ?? "", /denied by permission policy/);
-    assert.match(result?.reason ?? "", /\.\.\/outside/);
-    assert.deepEqual(selectCalls, [], "a policy deny must not reach the user prompt");
+    assert.equal(result.block, true);
+    assert.equal(asking.selectCalls.length, 1);
   });
 
   it("asks once with all cwd lines in the title and approves on Allow once", async () => {
-    const guard = createGuardDepsStub({
-      check: (_raw, index) => ({ ok: true, state: index === 0 ? "ask" : "allow" }),
-    });
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, { env: {}, guardDeps: guard, select: contextSelect });
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
     const { ctx, selectCalls } = createToolCallContext({ select: () => ALLOW_ONCE_OPTION });
 
     const result = await fireToolCall(pi, ctx, {
       toolName: "subagent",
-      input: { cwd: "../shared", tasks: [{ cwd: "../other" }] },
+      input: { cwd: "../shared", tasks: [{ cwd: "/workspace/project" }] },
     });
 
     assert.equal(result, undefined);
     assert.equal(selectCalls.length, 1, "multi-cwd calls must prompt exactly once");
-    assert.ok(selectCalls[0]?.title.includes(`$["cwd"] = "../shared" [ask]`));
-    assert.ok(selectCalls[0]?.title.includes(`$["tasks"][0]["cwd"] = "../other" [allow]`));
+    assert.ok(selectCalls[0]?.title.includes(`$["cwd"] = "../shared" [ask: differs from current directory]`));
+    assert.ok(selectCalls[0]?.title.includes(`$["tasks"][0]["cwd"] = "/workspace/project" [allow: matches current directory]`));
     assert.ok(selectCalls[0]?.title.includes('Current directory: "/workspace/project"'));
     assert.deepEqual(selectCalls[0]?.options, [DENY_OPTION, ALLOW_ONCE_OPTION]);
   });
@@ -359,11 +308,8 @@ describe("tool_call cwd protection (injected guard deps and select)", () => {
       ["cancel", undefined, /cancelled/],
       ["unknown", "sure thing", /unexpected approval response/],
     ] as const) {
-      const guard = createGuardDepsStub({
-        check: () => ({ ok: true, state: "ask" }),
-      });
       const pi = createStubPi();
-      createSubagentPermissionCompatExtension(pi.api, { env: {}, guardDeps: guard, select: contextSelect });
+      createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
       const { ctx } = createToolCallContext({ select: () => response });
 
       const result = (await fireToolCall(pi, ctx, {
@@ -378,11 +324,8 @@ describe("tool_call cwd protection (injected guard deps and select)", () => {
   });
 
   it("blocks when the select prompt throws", async () => {
-    const guard = createGuardDepsStub({
-      check: () => ({ ok: true, state: "ask" }),
-    });
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, { env: {}, guardDeps: guard, select: contextSelect });
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
     const { ctx } = createToolCallContext({
       selectThrows: new Error("dialog crashed"),
     });
@@ -397,11 +340,8 @@ describe("tool_call cwd protection (injected guard deps and select)", () => {
   });
 
   it("blocks an ask without interactive UI (print/JSON modes) and never prompts", async () => {
-    const guard = createGuardDepsStub({
-      check: () => ({ ok: true, state: "ask" }),
-    });
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, { env: {}, guardDeps: guard, select: contextSelect });
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
     const { ctx, selectCalls } = createToolCallContext({ hasUI: false, select: () => ALLOW_ONCE_OPTION });
 
     const result = (await fireToolCall(pi, ctx, {
@@ -414,12 +354,11 @@ describe("tool_call cwd protection (injected guard deps and select)", () => {
     assert.deepEqual(selectCalls, []);
   });
 
-  it("hard-blocks when the scan fails, regardless of collected items", async () => {
-    const guard = allowAllGuard();
+  it("hard-blocks when the scan fails, regardless of collected items and UI", async () => {
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, { env: {}, guardDeps: guard, select: contextSelect });
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
     const input: Record<string, unknown> = {};
-    input["before"] = { cwd: "../ok" };
+    input["before"] = { cwd: "/workspace/project" };
     Object.defineProperty(input, "danger", {
       enumerable: true,
       configurable: true,
@@ -436,15 +375,12 @@ describe("tool_call cwd protection (injected guard deps and select)", () => {
 
     assert.equal(result.block, true);
     assert.match(result.reason ?? "", /could not be safely scanned/);
-    assert.deepEqual(selectCalls, []);
+    assert.deepEqual(selectCalls, [], "a scan failure must not reach the user prompt");
   });
 
   it("asks again for a repeated ask call without reusing a previous approval", async () => {
-    const guard = createGuardDepsStub({
-      check: () => ({ ok: true, state: "ask" }),
-    });
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, { env: {}, guardDeps: guard, select: contextSelect });
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
     const { ctx, selectCalls } = createToolCallContext({ select: () => ALLOW_ONCE_OPTION });
 
     const first = await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: "../a" } });
@@ -455,23 +391,42 @@ describe("tool_call cwd protection (injected guard deps and select)", () => {
     assert.equal(selectCalls.length, 2, "each ask must prompt again");
   });
 
-  it("resolves the service with the current session ID per call", async () => {
-    const guard = allowAllGuard();
+  it("reads the event cwd, not the session ID: equal input allows, differing asks", async () => {
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, { env: {}, guardDeps: guard, select: contextSelect });
-    const { ctx } = createToolCallContext({ sessionId: "sess-tool-live" });
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
 
-    await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: "../a" } });
+    const matching = createToolCallContext({ cwd: "/workspace/project", select: () => ALLOW_ONCE_OPTION });
+    assert.equal(
+      await fireToolCall(pi, matching.ctx, { toolName: "subagent", input: { cwd: "/workspace/project" } }),
+      undefined,
+    );
+    assert.deepEqual(matching.selectCalls, []);
 
-    assert.deepEqual(guard.resolveCalls, ["sess-tool-live"]);
+    const differing = createToolCallContext({ cwd: "/elsewhere", select: () => DENY_OPTION });
+    const result = (await fireToolCall(pi, differing.ctx, {
+      toolName: "subagent",
+      input: { cwd: "/workspace/project" },
+    })) as ToolCallEventResult;
+    assert.equal(result.block, true, "the same input must ask against a different cwd");
+    assert.equal(differing.selectCalls.length, 1);
+  });
+
+  it("changing ctx.cwd between calls flips the same input from allow to ask (no stale cache)", async () => {
+    const pi = createStubPi();
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
+    const event = { toolName: "subagent", input: { cwd: "/work" } };
+
+    const before = createToolCallContext({ cwd: "/work", select: () => ALLOW_ONCE_OPTION });
+    assert.equal(await fireToolCall(pi, before.ctx, event), undefined);
+
+    const after = createToolCallContext({ cwd: "/other", select: () => DENY_OPTION });
+    const result = (await fireToolCall(pi, after.ctx, event)) as ToolCallEventResult;
+    assert.equal(result.block, true);
   });
 
   it("never modifies the tool-call input (frozen input passes through)", async () => {
-    const guard = createGuardDepsStub({
-      check: () => ({ ok: true, state: "deny" }),
-    });
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, { env: {}, guardDeps: guard, select: contextSelect });
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
     const { ctx } = createToolCallContext();
     const input = Object.freeze({ cwd: "../outside" });
 
@@ -482,12 +437,9 @@ describe("tool_call cwd protection (injected guard deps and select)", () => {
   });
 
   it("blocking a batch call keeps every subtask from running (atomic refusal)", async () => {
-    const guard = createGuardDepsStub({
-      check: (_raw, index) => ({ ok: true, state: index === 0 ? "deny" : "allow" }),
-    });
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, { env: {}, guardDeps: guard, select: contextSelect });
-    const { ctx } = createToolCallContext({ select: () => ALLOW_ONCE_OPTION });
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
+    const { ctx } = createToolCallContext({ select: () => DENY_OPTION });
     const executedTasks: string[] = [];
     const fakeExecutor = (task: string, event?: ToolCallEvent): void => {
       // The host runs tools only when no handler blocked the call.
@@ -496,7 +448,7 @@ describe("tool_call cwd protection (injected guard deps and select)", () => {
       }
     };
 
-    const event = { type: "tool_call" as const, toolCallId: "call-1", toolName: "delegate", input: { tasks: [{ cwd: "../denied" }, { cwd: "../allowed" }] } };
+    const event = { type: "tool_call" as const, toolCallId: "call-1", toolName: "delegate", input: { tasks: [{ cwd: "../denied" }, { cwd: "/workspace/project" }] } };
     const result = (await fireToolCall(pi, ctx, event)) as ToolCallEventResult;
 
     // A blocked call never reaches the executor: no subtask runs at all.
@@ -510,70 +462,66 @@ describe("tool_call cwd protection (injected guard deps and select)", () => {
 });
 
 describe("cross-phase regression (capabilities compose)", () => {
-  it("published session id flows from session_start into tool_call service resolution", async () => {
+  it("session publication and current-cwd comparison work together in one host", async () => {
     const env: SubagentEnv = {};
-    const guard = createGuardDepsStub({ check: () => ({ ok: true, state: "ask" }) });
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, {
-      env,
-      guardDeps: guard,
-      select: contextSelect,
-    });
-    const { ctx } = createToolCallContext({ sessionId: "sess-regression-1", select: () => ALLOW_ONCE_OPTION });
+    createSubagentPermissionCompatExtension(pi.api, { env, ...baseOptions() });
+    const sessionCtx = createSessionContext("sess-regression-1");
+    const { ctx, selectCalls } = createToolCallContext({ cwd: "/workspace/project", select: () => ALLOW_ONCE_OPTION });
 
-    fireSessionStart(pi, ctx);
+    // Session publication is unchanged and independent of cwd evaluation.
+    fireSessionStart(pi, sessionCtx.ctx);
     assert.equal(env[PARENT_SESSION_ENV_VAR], "sess-regression-1");
 
-    await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: "../a" } });
-    assert.deepEqual(guard.resolveCalls, ["sess-regression-1"]);
+    // The tool_call handler compares against the event cwd, not the session ID.
+    await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: "/workspace/project" } });
+    assert.deepEqual(selectCalls, [], "a matching cwd allows without prompting");
   });
 
-  it("after shutdown and a new session, tool_call resolves the new session id and env is re-published", async () => {
+  it("after shutdown and a new session, the env is re-published and cwd evaluation follows each call's cwd", async () => {
     const env: SubagentEnv = {};
-    const guard = createGuardDepsStub();
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, {
-      env,
-      guardDeps: guard,
-      select: contextSelect,
-    });
-    const first = createToolCallContext({ sessionId: "sess-before-reload" });
-    const second = createToolCallContext({ sessionId: "sess-after-reload" });
+    createSubagentPermissionCompatExtension(pi.api, { env, ...baseOptions() });
+    const firstSession = createSessionContext("sess-before-reload");
+    const secondSession = createSessionContext("sess-after-reload");
+    const before = createToolCallContext({ cwd: "/old", select: () => ALLOW_ONCE_OPTION });
+    const after = createToolCallContext({ cwd: "/new", select: () => ALLOW_ONCE_OPTION });
 
-    fireSessionStart(pi, first.ctx);
-    await fireToolCall(pi, first.ctx, { toolName: "subagent", input: { cwd: "../a" } });
-    assert.deepEqual(guard.resolveCalls, ["sess-before-reload"]);
+    fireSessionStart(pi, firstSession.ctx);
+    await fireToolCall(pi, before.ctx, { toolName: "subagent", input: { cwd: "/old" } });
+    assert.deepEqual(before.selectCalls, []);
 
     fireSessionShutdown(pi, "reload");
     assert.equal(env[PARENT_SESSION_ENV_VAR], undefined);
 
-    fireSessionStart(pi, second.ctx);
+    fireSessionStart(pi, secondSession.ctx);
     assert.equal(env[PARENT_SESSION_ENV_VAR], "sess-after-reload");
-    await fireToolCall(pi, second.ctx, { toolName: "subagent", input: { cwd: "../b" } });
-    assert.deepEqual(guard.resolveCalls, ["sess-before-reload", "sess-after-reload"]);
+    // Same input now compares against the new cwd and asks; the user denies it.
+    const denying = createToolCallContext({ cwd: "/new", select: () => DENY_OPTION });
+    const result = (await fireToolCall(pi, denying.ctx, {
+      toolName: "subagent",
+      input: { cwd: "/old" },
+    })) as ToolCallEventResult;
+    assert.equal(result.block, true);
   });
 
-  it("ask degradation holds when the service becomes unavailable between calls", async () => {
+  it("an ask that the user rejects blocks the call with the approval-denied reason", async () => {
     const env: SubagentEnv = {};
-    const guardOptions: GuardStubOptions = {};
-    const guard = createGuardDepsStub(guardOptions);
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, {
-      env,
-      guardDeps: guard,
-      select: contextSelect,
-    });
-    const { ctx, selectCalls } = createToolCallContext({ sessionId: "sess-degrade", select: () => DENY_OPTION });
+    createSubagentPermissionCompatExtension(pi.api, { env, ...baseOptions() });
+    const { ctx, selectCalls } = createToolCallContext({ cwd: "/workspace/project", select: () => DENY_OPTION });
 
-    fireSessionStart(pi, ctx);
-    await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: "../a" } });
-    assert.deepEqual(selectCalls, []); // allow: no prompt
+    const sessionCtx = createSessionContext("sess-regression-deny");
+    fireSessionStart(pi, sessionCtx.ctx);
+    assert.equal(env[PARENT_SESSION_ENV_VAR], "sess-regression-deny");
 
-    // Query failure degrades the item to ask; the user then denies it.
-    guardOptions.check = () => ({ ok: false, reason: "permission query failed: boom" });
-    const result = (await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: "../b" } })) as ToolCallEventResult;
+    const result = (await fireToolCall(pi, ctx, {
+      toolName: "subagent",
+      input: { cwd: "../outside" },
+    })) as ToolCallEventResult;
+
     assert.equal(result.block, true);
     assert.match(result.reason ?? "", /not approved/);
-    assert.equal(selectCalls.length, 1, "the degraded ask must prompt once");
+    assert.equal(selectCalls.length, 1, "the ask must prompt once");
   });
 });
