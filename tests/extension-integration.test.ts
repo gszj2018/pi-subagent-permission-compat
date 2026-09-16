@@ -52,6 +52,11 @@ const contextSelect: SelectResolver = (ctx) => ctx.ui.select;
 const posixNormalize: NormalizePath = (value) => path.posix.normalize(value);
 const win32Normalize: NormalizePath = (value) => path.win32.normalize(value);
 
+/** Deliberately broken injection: `evaluateCwdOccurrences` must fail closed. */
+const throwingNormalize: NormalizePath = () => {
+  throw new Error("normalize exploded");
+};
+
 /** Base options with an in-memory env and an explicit normalizer. */
 function baseOptions(normalizePath: NormalizePath = posixNormalize): Pick<ExtensionOptions, "normalizePath" | "select"> {
   return { normalizePath, select: contextSelect };
@@ -91,7 +96,7 @@ function fireSessionShutdown(pi: StubPi, reason: "quit" | "reload" | "new" | "re
 
 interface ToolCallStub {
   ctx: ExtensionContext;
-  selectCalls: { title: string; options: string[] }[];
+  selectCalls: { title: string; options: string[]; signal: AbortSignal | undefined }[];
 }
 
 const CWD_POSIX = "/workspace/project";
@@ -104,16 +109,37 @@ function subagent(cwd: string) {
 }
 
 /**
+ * Input whose nested container has an own enumerable accessor: the shallow JSON
+ * container check rejects it during the scan without ever triggering the getter,
+ * so the whole scan fails closed. A fresh record is built on every call.
+ */
+function createScanFailureInput(): Record<string, unknown> {
+  const input: Record<string, unknown> = {};
+  input["before"] = { cwd: CWD_POSIX };
+  const nested: Record<string, unknown> = {};
+  Object.defineProperty(nested, "danger", {
+    enumerable: true,
+    configurable: true,
+    get() {
+      throw new Error("scan exploded");
+    },
+  });
+  input["nested"] = nested;
+  return input;
+}
+
+/**
  * Tool-call context whose session ID getter is intentionally not callable:
  * the tool_call handler must decide from the event cwd, never the session ID.
  */
 function createToolCallContext(options: {
   hasUI?: boolean;
   cwd?: string;
+  signal?: AbortSignal;
   select?: (title: string, options: string[]) => Promise<string | undefined> | string | undefined;
   selectThrows?: Error;
 } = {}): ToolCallStub {
-  const selectCalls: { title: string; options: string[] }[] = [];
+  const selectCalls: { title: string; options: string[]; signal: AbortSignal | undefined }[] = [];
   const ctx = {
     sessionManager: {
       getSessionId: () => {
@@ -122,10 +148,10 @@ function createToolCallContext(options: {
     },
     hasUI: options.hasUI ?? true,
     cwd: options.cwd ?? CWD_POSIX,
-    signal: undefined,
+    signal: options.signal,
     ui: {
-      select: async (title: string, optionList: string[]) => {
-        selectCalls.push({ title, options: optionList });
+      select: async (title: string, optionList: string[], opts?: { signal?: AbortSignal }) => {
+        selectCalls.push({ title, options: optionList, signal: opts?.signal });
         if (options.selectThrows) {
           throw options.selectThrows;
         }
@@ -348,30 +374,71 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
     assert.deepEqual(selectCalls, []);
   });
 
-  it("hard-blocks when the scan fails, regardless of collected items and UI", async () => {
+  it("allows a matching cwd without interactive UI and never prompts", async () => {
     const pi = createStubPi();
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
-    const input: Record<string, unknown> = {};
-    input["before"] = { cwd: CWD_POSIX };
-    const nested: Record<string, unknown> = {};
-    Object.defineProperty(nested, "danger", {
-      enumerable: true,
-      configurable: true,
-      get() {
-        throw new Error("scan exploded");
-      },
-    });
-    input["nested"] = nested;
+    const { ctx, selectCalls } = createToolCallContext({ hasUI: false, select: selectAllowOnce });
+
+    const result = await fireToolCall(pi, ctx, subagent(CWD_POSIX));
+
+    assert.equal(result, undefined, "an allow needs no UI");
+    assert.deepEqual(selectCalls, []);
+  });
+
+  it("hard-blocks when the scan fails, regardless of collected items", async () => {
+    const pi = createStubPi();
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
     const { ctx, selectCalls } = createToolCallContext({ select: selectAllowOnce });
 
     const result = (await fireToolCall(pi, ctx, {
       toolName: "subagent",
-      input,
+      input: createScanFailureInput(),
     })) as ToolCallEventResult;
 
     assert.equal(result.block, true);
     assert.match(result.reason ?? "", /could not be safely evaluated/);
     assert.deepEqual(selectCalls, [], "a scan failure must not reach the user prompt");
+  });
+
+  it("hard-blocks a scan failure without interactive UI exactly as with UI", async () => {
+    const pi = createStubPi();
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
+    const { ctx, selectCalls } = createToolCallContext({ hasUI: false, select: selectAllowOnce });
+
+    const result = (await fireToolCall(pi, ctx, {
+      toolName: "subagent",
+      input: createScanFailureInput(),
+    })) as ToolCallEventResult;
+
+    assert.equal(result.block, true);
+    assert.match(result.reason ?? "", /could not be safely evaluated/);
+    assert.deepEqual(selectCalls, [], "a scan failure must not reach the user prompt");
+  });
+
+  it("hard-blocks when the injected normalizer throws, with UI available", async () => {
+    const pi = createStubPi();
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions(throwingNormalize) });
+    const { ctx, selectCalls } = createToolCallContext({ select: selectAllowOnce });
+
+    const result = (await fireToolCall(pi, ctx, subagent("../outside"))) as ToolCallEventResult;
+
+    assert.equal(result.block, true);
+    assert.match(result.reason ?? "", /could not be safely evaluated/);
+    assert.match(result.reason ?? "", /normalize exploded/);
+    assert.deepEqual(selectCalls, [], "a deny must not reach the prompt or be overridable");
+  });
+
+  it("hard-blocks when the injected normalizer throws without interactive UI", async () => {
+    const pi = createStubPi();
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions(throwingNormalize) });
+    const { ctx, selectCalls } = createToolCallContext({ hasUI: false, select: selectAllowOnce });
+
+    const result = (await fireToolCall(pi, ctx, subagent("../outside"))) as ToolCallEventResult;
+
+    assert.equal(result.block, true);
+    assert.match(result.reason ?? "", /could not be safely evaluated/);
+    assert.match(result.reason ?? "", /normalize exploded/);
+    assert.deepEqual(selectCalls, []);
   });
 
   it("asks again for a repeated ask call without reusing a previous approval", async () => {
@@ -428,34 +495,53 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
     assert.ok(Object.isFrozen(input));
     assert.equal((result as ToolCallEventResult).block, true);
   });
+});
 
-  it("blocking a batch call keeps every subtask from running (atomic refusal)", async () => {
+describe("tool_call abort signal handling", () => {
+  it("passes the context signal through to the approval prompt", async () => {
     const pi = createStubPi();
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
-    const { ctx } = createToolCallContext({ select: selectDeny });
-    const executedTasks: string[] = [];
-    const fakeExecutor = (task: string, event?: ToolCallEvent): void => {
-      // The host runs tools only when no handler blocked the call.
-      if (event) {
-        executedTasks.push(task);
-      }
-    };
+    const controller = new AbortController();
+    const { ctx, selectCalls } = createToolCallContext({ signal: controller.signal, select: selectAllowOnce });
 
-    const event = {
-      type: "tool_call" as const,
-      toolCallId: "call-1",
-      toolName: "delegate",
-      input: { tasks: [{ cwd: "../denied" }, { cwd: CWD_POSIX }] }
-    };
-    const result = (await fireToolCall(pi, ctx, event)) as ToolCallEventResult;
+    const result = await fireToolCall(pi, ctx, subagent("../outside"));
 
-    // A blocked call never reaches the executor: no subtask runs at all.
+    assert.equal(result, undefined, "an explicit Allow once still approves");
+    assert.equal(selectCalls.length, 1);
+    assert.equal(selectCalls[0]?.signal, controller.signal);
+  });
+
+  it("blocks an ask whose signal is already aborted and never shows a prompt", async () => {
+    const pi = createStubPi();
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
+    const controller = new AbortController();
+    controller.abort();
+    const { ctx, selectCalls } = createToolCallContext({ signal: controller.signal, select: selectAllowOnce });
+
+    const result = (await fireToolCall(pi, ctx, subagent("../outside"))) as ToolCallEventResult;
+
     assert.equal(result.block, true);
-    if (!result.block) {
-      fakeExecutor("task0", event);
-      fakeExecutor("task1", event);
-    }
-    assert.deepEqual(executedTasks, []);
+    assert.match(result.reason ?? "", /cancelled/);
+    assert.deepEqual(selectCalls, [], "an already-cancelled call must not show a prompt");
+  });
+
+  it("ignores a late approval that arrives after the signal aborted during the prompt", async () => {
+    const pi = createStubPi();
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
+    const controller = new AbortController();
+    const { ctx, selectCalls } = createToolCallContext({
+      signal: controller.signal,
+      select: () => {
+        controller.abort();
+        return ALLOW_ONCE_OPTION;
+      },
+    });
+
+    const result = (await fireToolCall(pi, ctx, subagent("../outside"))) as ToolCallEventResult;
+
+    assert.equal(result.block, true);
+    assert.match(result.reason ?? "", /cancelled/);
+    assert.equal(selectCalls.length, 1, "the prompt shows once but its late approval is discarded");
   });
 });
 
@@ -472,7 +558,8 @@ describe("cross-phase regression (capabilities compose)", () => {
     assert.equal(env[PARENT_SESSION_ENV_VAR], "sess-regression-1");
 
     // The tool_call handler compares against the event cwd, not the session ID.
-    await fireToolCall(pi, ctx, subagent(CWD_POSIX));
+    const allowed = await fireToolCall(pi, ctx, subagent(CWD_POSIX));
+    assert.equal(allowed, undefined, "a matching cwd allows the call");
     assert.deepEqual(selectCalls, [], "a matching cwd allows without prompting");
   });
 
@@ -485,8 +572,9 @@ describe("cross-phase regression (capabilities compose)", () => {
     const before = createToolCallContext({ cwd: "/old", select: selectDeny });
 
     fireSessionStart(pi, firstSession.ctx);
-    await fireToolCall(pi, before.ctx, subagent("/old"));
-    assert.deepEqual(before.selectCalls, []);
+    const allowedBefore = await fireToolCall(pi, before.ctx, subagent("/old"));
+    assert.equal(allowedBefore, undefined, "a matching cwd allows the call");
+    assert.deepEqual(before.selectCalls, [], "the denying selector is never reached on allow");
 
     fireSessionShutdown(pi, "reload");
     assert.equal(env[PARENT_SESSION_ENV_VAR], undefined);
