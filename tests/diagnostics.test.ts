@@ -7,7 +7,7 @@ describe("describeUnknown", () => {
   it("uses safe JSON display and never throws", () => {
     assert.equal(describeUnknown("plain"), '"plain"');
     assert.equal(describeUnknown(42), "42");
-    assert.equal(describeUnknown(undefined), "undefined");
+    assert.equal(describeUnknown(undefined), "[undefined]");
     const cyclic: Record<string, unknown> = {};
     cyclic["self"] = cyclic;
     assert.equal(describeUnknown(cyclic), "[unserializable value]");
@@ -18,9 +18,9 @@ describe("describeUnknown", () => {
     assert.equal(describeUnknown("\u001b[31mred"), '"\\u001b[31mred"');
   });
 
-  it("falls back to String() for values JSON.stringify cannot return", () => {
-    assert.equal(describeUnknown(Symbol("s")), "Symbol(s)");
-    assert.equal(describeUnknown(() => "fn"), '()=>"fn"');
+  it("falls back to a type label for values JSON.stringify cannot return", () => {
+    assert.equal(describeUnknown(Symbol("s")), "[symbol]");
+    assert.equal(describeUnknown(() => "fn"), "[function]");
   });
 });
 

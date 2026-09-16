@@ -50,12 +50,12 @@ describe("value and line formatting", () => {
     assert.equal(formatCwdValue("\u001b[31mred"), '"\\u001b[31mred"');
   });
 
-  it("shows undefined verbatim and non-JSON types with type markers", () => {
-    assert.equal(formatCwdValue(undefined), "undefined");
+  it("shows empty and non-JSON values with type markers", () => {
+    assert.equal(formatCwdValue(undefined), "[undefined]");
     assert.equal(formatCwdValue({ path: "../other" }), '{"path":"../other"}');
     assert.equal(formatCwdValue(["../a"]), '["../a"]');
     assert.equal(formatCwdValue(42), "42");
-    assert.equal(formatCwdValue(Symbol("s")), "Symbol(s)");
+    assert.equal(formatCwdValue(Symbol("s")), "[symbol]");
   });
 
   it("renders evaluation lines with path, safe value, state, and non-empty reason", () => {

@@ -12,7 +12,7 @@ export function describeUnknown(value: unknown): string {
   try {
     // Strings stay JSON-quoted so control characters cannot forge prompt
     // lines; undefined/symbol/function fall back via `??`.
-    return JSON.stringify(value) ?? String(value);
+    return JSON.stringify(value) ?? `[${typeof value}]`;
   } catch {
     return "[unserializable value]";
   }
