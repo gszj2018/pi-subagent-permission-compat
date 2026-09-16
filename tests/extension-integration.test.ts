@@ -99,6 +99,10 @@ const CWD_WIN32 = "C:\\workspace\\project";
 const selectAllowOnce = () => ALLOW_ONCE_OPTION;
 const selectDeny = () => DENY_OPTION;
 
+function subagent(cwd: string) {
+  return { toolName: "subagent", input: { cwd } }
+}
+
 /**
  * Tool-call context whose session ID getter is intentionally not callable:
  * the tool_call handler must decide from the event cwd, never the session ID.
@@ -259,10 +263,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions(posixNormalize) });
     const { ctx, selectCalls } = createToolCallContext({ select: selectAllowOnce });
 
-    const result = await fireToolCall(pi, ctx, {
-      toolName: "subagent",
-      input: { cwd: CWD_POSIX },
-    });
+    const result = await fireToolCall(pi, ctx, subagent(CWD_POSIX));
 
     assert.equal(result, undefined);
     assert.deepEqual(selectCalls, []);
@@ -276,18 +277,12 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
       cwd: CWD_WIN32,
       select: selectAllowOnce,
     });
-    assert.equal(
-      await fireToolCall(pi, allowed.ctx, { toolName: "subagent", input: { cwd: "C:/workspace/project" } }),
-      undefined,
-    );
+    assert.equal(await fireToolCall(pi, allowed.ctx, subagent("C:/workspace/project")), undefined);
     assert.deepEqual(allowed.selectCalls, []);
 
     // A different drive stays ask and prompts.
     const asking = createToolCallContext({ cwd: CWD_WIN32, select: selectDeny });
-    const result = (await fireToolCall(pi, asking.ctx, {
-      toolName: "subagent",
-      input: { cwd: "D:\\workspace\\project" },
-    })) as ToolCallEventResult;
+    const result = (await fireToolCall(pi, asking.ctx, subagent("D:\\workspace\\project"))) as ToolCallEventResult;
     assert.equal(result.block, true);
     assert.equal(asking.selectCalls.length, 1);
   });
@@ -320,10 +315,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
       createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
       const { ctx } = createToolCallContext({ select: () => response });
 
-      const result = (await fireToolCall(pi, ctx, {
-        toolName: "subagent",
-        input: { cwd: "../outside" },
-      })) as ToolCallEventResult;
+      const result = (await fireToolCall(pi, ctx, subagent("../outside"))) as ToolCallEventResult;
 
       assert.equal(result.block, true, name);
       assert.match(result.reason ?? "", expectedFragment);
@@ -338,10 +330,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
       selectThrows: new Error("dialog crashed"),
     });
 
-    const result = (await fireToolCall(pi, ctx, {
-      toolName: "subagent",
-      input: { cwd: "../outside" },
-    })) as ToolCallEventResult;
+    const result = (await fireToolCall(pi, ctx, subagent("../outside"))) as ToolCallEventResult;
 
     assert.equal(result.block, true);
     assert.match(result.reason ?? "", /approval prompt failed/);
@@ -352,10 +341,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
     const { ctx, selectCalls } = createToolCallContext({ hasUI: false, select: selectAllowOnce });
 
-    const result = (await fireToolCall(pi, ctx, {
-      toolName: "subagent",
-      input: { cwd: "../outside" },
-    })) as ToolCallEventResult;
+    const result = (await fireToolCall(pi, ctx, subagent("../outside"))) as ToolCallEventResult;
 
     assert.equal(result.block, true);
     assert.match(result.reason ?? "", /no interactive UI/);
@@ -391,8 +377,8 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
     const { ctx, selectCalls } = createToolCallContext({ select: selectAllowOnce });
 
-    const first = await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: "../a" } });
-    const second = await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: "../a" } });
+    const first = await fireToolCall(pi, ctx, subagent("../a"));
+    const second = await fireToolCall(pi, ctx, subagent("../a"));
 
     assert.equal(first, undefined);
     assert.equal(second, undefined);
@@ -405,16 +391,13 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
 
     const matching = createToolCallContext({ cwd: CWD_POSIX, select: selectAllowOnce });
     assert.equal(
-      await fireToolCall(pi, matching.ctx, { toolName: "subagent", input: { cwd: CWD_POSIX } }),
+      await fireToolCall(pi, matching.ctx, subagent(CWD_POSIX)),
       undefined,
     );
     assert.deepEqual(matching.selectCalls, []);
 
     const differing = createToolCallContext({ cwd: "/elsewhere", select: selectDeny });
-    const result = (await fireToolCall(pi, differing.ctx, {
-      toolName: "subagent",
-      input: { cwd: CWD_POSIX },
-    })) as ToolCallEventResult;
+    const result = (await fireToolCall(pi, differing.ctx, subagent(CWD_POSIX))) as ToolCallEventResult;
     assert.equal(result.block, true, "the same input must ask against a different cwd");
     assert.equal(differing.selectCalls.length, 1);
   });
@@ -422,7 +405,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
   it("changing ctx.cwd between calls flips the same input from allow to ask (no stale cache)", async () => {
     const pi = createStubPi();
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
-    const event = { toolName: "subagent", input: { cwd: "/work" } };
+    const event = subagent("/work");
 
     const before = createToolCallContext({ cwd: "/work", select: selectAllowOnce });
     assert.equal(await fireToolCall(pi, before.ctx, event), undefined);
@@ -487,7 +470,7 @@ describe("cross-phase regression (capabilities compose)", () => {
     assert.equal(env[PARENT_SESSION_ENV_VAR], "sess-regression-1");
 
     // The tool_call handler compares against the event cwd, not the session ID.
-    await fireToolCall(pi, ctx, { toolName: "subagent", input: { cwd: CWD_POSIX } });
+    await fireToolCall(pi, ctx, subagent(CWD_POSIX));
     assert.deepEqual(selectCalls, [], "a matching cwd allows without prompting");
   });
 
@@ -500,7 +483,7 @@ describe("cross-phase regression (capabilities compose)", () => {
     const before = createToolCallContext({ cwd: "/old", select: selectDeny });
 
     fireSessionStart(pi, firstSession.ctx);
-    await fireToolCall(pi, before.ctx, { toolName: "subagent", input: { cwd: "/old" } });
+    await fireToolCall(pi, before.ctx, subagent("/old"));
     assert.deepEqual(before.selectCalls, []);
 
     fireSessionShutdown(pi, "reload");
@@ -510,7 +493,7 @@ describe("cross-phase regression (capabilities compose)", () => {
     assert.equal(env[PARENT_SESSION_ENV_VAR], "sess-after-reload");
     // Same input now compares against the new cwd and asks; the user denies it.
     const denying = createToolCallContext({ cwd: "/new", select: selectDeny });
-    const result = await fireToolCall(pi, denying.ctx, { toolName: "subagent", input: { cwd: "/old" } })
+    const result = await fireToolCall(pi, denying.ctx, subagent("/old"));
     assert.equal(result?.block, true);
   });
 
@@ -524,10 +507,7 @@ describe("cross-phase regression (capabilities compose)", () => {
     fireSessionStart(pi, sessionCtx.ctx);
     assert.equal(env[PARENT_SESSION_ENV_VAR], "sess-regression-deny");
 
-    const result = (await fireToolCall(pi, ctx, {
-      toolName: "subagent",
-      input: { cwd: "../outside" },
-    })) as ToolCallEventResult;
+    const result = (await fireToolCall(pi, ctx, subagent("../outside"))) as ToolCallEventResult;
 
     assert.equal(result.block, true);
     assert.match(result.reason ?? "", /not approved/);
