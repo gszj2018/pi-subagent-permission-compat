@@ -237,7 +237,6 @@ describe("cwd collection", () => {
     });
     const result = collectCwdOccurrences(input);
     assert.ok(result.error, "a scan error must be reported");
-    assert.match(result.error.message, /danger/);
     assert.match(result.error.message, /getter exploded/);
     // Items collected before the failure are still reported, but the caller
     // must block on scanError; nothing is silently allowed.

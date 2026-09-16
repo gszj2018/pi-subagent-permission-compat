@@ -9,6 +9,8 @@
  * hard block instead of an implicit allow.
  */
 
+import { describeUnknown, describeError } from "./diagnostics.ts";
+
 /**
  * Tool-name pattern for the calls this extension inspects. Intentionally
  * loose: no word boundaries, no `g` flag, no dependency on third-party
@@ -52,8 +54,28 @@ export const MAX_SCAN_DEPTH = 10;
 /** The exact key name that marks a working-directory field. */
 const CWD_KEY = "cwd";
 
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function isArrayIndexKey(key: string): boolean {
+  const MAX_ARRAY_INDEX = 2 ** 32 - 1;
+  const index = Number(key);
+
+  return (
+    Number.isInteger(index) &&
+    index >= 0 &&
+    index < MAX_ARRAY_INDEX &&
+    String(index) === key
+  );
+}
+
+function nestError(path: string): CwdScanError {
+  return {
+    message: `Input nesting exceeds the maximum scan depth of ${MAX_SCAN_DEPTH} levels; the subtree at ${path} was not fully scanned.`
+  }
+}
+
+function invalidArrayIndexKeyError(path: string, key: string): CwdScanError {
+  return {
+    message: `Input tree could not be fully scanned; Invalid array index key at ${path}: ${describeUnknown(key)}`
+  }
 }
 
 /**
@@ -77,8 +99,12 @@ export function collectCwdOccurrences(input: unknown): CwdScanResult {
   if (input === null || typeof input !== "object") {
     return { occurrences };
   }
-  const error = scanContainer(input as object, "$", 0, new Set<object>(), occurrences);
-  return error === undefined ? { occurrences } : { occurrences, error };
+  try {
+    const error = scanContainer(input as object, "$", 0, new Set<object>(), occurrences);
+    return error === undefined ? { occurrences } : { occurrences, error };
+  } catch (e) {
+    return { occurrences, error: { message: `Input tree could not be fully scanned; Error: ${describeError(e)}` } };
+  }
 }
 
 /**
@@ -93,10 +119,7 @@ function scanContainer(
   occurrences: CwdOccurrence[],
 ): CwdScanError | undefined {
   if (depth >= MAX_SCAN_DEPTH) {
-    return {
-      message:
-        `Input nesting exceeds the maximum scan depth of ${MAX_SCAN_DEPTH} levels; the subtree at ${path} was not fully scanned.`,
-    };
+    return nestError(path);
   }
   if (ancestors.has(node)) {
     // Cycle back into the current chain: skip without aborting the scan.
@@ -105,30 +128,19 @@ function scanContainer(
   ancestors.add(node);
 
   const isArray = Array.isArray(node);
-  let keys: string[];
-  try {
-    keys = isArray ? [] : Object.keys(node);
-  } catch (error) {
-    return {
-      message: `Input tree could not be fully scanned; failed to list keys at ${path}: ${describeError(error)}`,
-    };
-  }
-  const entryCount = isArray ? (node as unknown[]).length : keys.length;
 
-  for (let index = 0; index < entryCount; index++) {
-    const key = isArray ? index : (keys[index] as string);
-    const childPath = isArray ? `${path}[${key}]` : `${path}[${JSON.stringify(key)}]`;
-
-    let value: unknown;
-    try {
-      value = isArray ? (node as unknown[])[index] : (node as Record<string, unknown>)[key];
-    } catch (error) {
-      return {
-        message: `Input tree could not be fully scanned; failed to read ${childPath}: ${describeError(error)}`,
-      };
+  for (const key in node) {
+    if (!Object.hasOwn(node, key)) {
+      continue;
     }
 
-    if (!isArray && key === CWD_KEY) {
+    if (isArray && !isArrayIndexKey(key)) {
+      return invalidArrayIndexKeyError(path, key);
+    }
+
+    let value = node[key as keyof typeof node];
+    const childPath = isArray ? `${path}[${key}]` : `${path}[${describeUnknown(key)}]`;
+    if (key === CWD_KEY) {
       // The cwd value is a leaf; never descend into it.
       occurrences.push({ path: childPath, value });
       continue;
