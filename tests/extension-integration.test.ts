@@ -1,6 +1,5 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import path from "node:path";
 
 import type {
   ExtensionAPI,
@@ -27,7 +26,6 @@ import {
   ALLOW_ONCE_OPTION,
   DENY_OPTION,
 } from "../extensions/cwd-prompt.ts";
-import type { NormalizePath } from "../extensions/cwd-guard.ts";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -51,17 +49,9 @@ function createStubPi(): StubPi {
 /** Standard production-style resolver: use the event context's own select. */
 const contextSelect: SelectResolver = (ctx) => ctx.ui.select;
 
-const posixNormalize: NormalizePath = (value) => path.posix.normalize(value);
-const win32Normalize: NormalizePath = (value) => path.win32.normalize(value);
-
-/** Deliberately broken injection: `evaluateCwdOccurrences` must fail closed. */
-const throwingNormalize: NormalizePath = () => {
-  throw new Error("normalize exploded");
-};
-
-/** Base options with an in-memory env and an explicit normalizer. */
-function baseOptions(normalizePath: NormalizePath = posixNormalize): Pick<ExtensionOptions, "normalizePath" | "select"> {
-  return { normalizePath, select: contextSelect };
+/** Base options for the injectable factories: only the approval selector. */
+function baseOptions(): Pick<ExtensionOptions, "select"> {
+  return { select: contextSelect };
 }
 
 interface SessionStub {
@@ -198,7 +188,7 @@ describe("extension registration", () => {
     assert.deepEqual([...envPi.handlers.keys()].sort(), ["session_shutdown", "session_start"]);
 
     const guardPi = createStubPi();
-    createCwdGuardFeature(guardPi.api, { normalizePath: posixNormalize, select: contextSelect });
+    createCwdGuardFeature(guardPi.api, { select: contextSelect });
     assert.deepEqual([...guardPi.handlers.keys()], ["tool_call"]);
   });
 
@@ -271,7 +261,7 @@ describe("minimal lifecycle through the event host (injected env)", () => {
   });
 });
 
-describe("tool_call cwd protection (injected normalizePath and select)", () => {
+describe("tool_call cwd protection (strict equality and injected select)", () => {
   it("ignores tools that do not match the pattern without any evaluation", async () => {
     const pi = createStubPi();
     createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
@@ -288,7 +278,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
 
   it("returns undefined for an all-allow call without prompting (posix)", async () => {
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions(posixNormalize) });
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
     const { ctx, selectCalls } = createToolCallContext({ select: selectAllowOnce });
 
     const result = await fireToolCall(pi, ctx, subagent(CWD_POSIX));
@@ -297,22 +287,28 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
     assert.deepEqual(selectCalls, []);
   });
 
-  it("normalizes win32 paths through the injected normalizer (win32)", async () => {
+  it("allows the byte-identical win32 path and asks when only separators differ", async () => {
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions(win32Normalize) });
-    // Forward slashes fold to backslashes: the same directory, so allow.
-    const allowed = createToolCallContext({
-      cwd: CWD_WIN32,
-      select: selectAllowOnce,
-    });
-    assert.equal(await fireToolCall(pi, allowed.ctx, subagent("C:/workspace/project")), undefined);
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
+
+    // Identical raw string: allow without prompting (the denying selector is
+    // never reached).
+    const allowed = createToolCallContext({ cwd: CWD_WIN32, select: selectDeny });
+    assert.equal(await fireToolCall(pi, allowed.ctx, subagent(CWD_WIN32)), undefined);
     assert.deepEqual(allowed.selectCalls, []);
 
-    // A different drive stays ask and prompts.
+    // Forward slashes are not folded: the same directory still asks, and a
+    // Deny response hard-blocks the call.
     const asking = createToolCallContext({ cwd: CWD_WIN32, select: selectDeny });
-    const result = (await fireToolCall(pi, asking.ctx, subagent("D:\\workspace\\project"))) as ToolCallEventResult;
+    const result = (await fireToolCall(pi, asking.ctx, subagent("C:/workspace/project"))) as ToolCallEventResult;
     assert.equal(result.block, true);
     assert.equal(asking.selectCalls.length, 1);
+
+    // A different drive asks as well.
+    const otherDrive = createToolCallContext({ cwd: CWD_WIN32, select: selectDeny });
+    const denied = (await fireToolCall(pi, otherDrive.ctx, subagent("D:\\workspace\\project"))) as ToolCallEventResult;
+    assert.equal(denied.block, true);
+    assert.equal(otherDrive.selectCalls.length, 1);
   });
 
   it("asks once with all cwd lines in the title and approves on Allow once", async () => {
@@ -322,15 +318,19 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
 
     const result = await fireToolCall(pi, ctx, {
       toolName: "subagent",
-      input: { cwd: "../shared", tasks: [{ cwd: CWD_POSIX }] },
+      input: { cwd: CWD_POSIX, tasks: [{ cwd: "/workspace/project/." }, { cwd: "../shared" }] },
     });
 
     assert.equal(result, undefined);
     assert.equal(selectCalls.length, 1, "multi-cwd calls must prompt exactly once");
-    assert.match(selectCalls[0]?.title ?? "", /^\[pi-subagent-permission-compat] /);
-    assert.ok(selectCalls[0]?.title.includes(`$["cwd"] = "../shared" [ask: differs from current directory]`));
-    assert.ok(selectCalls[0]?.title.includes(`$["tasks"][0]["cwd"] = "/workspace/project" [allow: matches current directory]`));
-    assert.ok(selectCalls[0]?.title.includes("Current directory: /workspace/project"));
+    const title = selectCalls[0]?.title ?? "";
+    assert.match(title, /^\[pi-subagent-permission-compat] /);
+    // The exactly equal value allows; the folding-equivalent value must ask
+    // instead of being silently allowed.
+    assert.ok(title.includes(`$["cwd"] = "/workspace/project" [allow: matches current directory]`));
+    assert.ok(title.includes(`$["tasks"][0]["cwd"] = "/workspace/project/." [ask: differs from current directory]`));
+    assert.ok(title.includes(`$["tasks"][1]["cwd"] = "../shared" [ask: differs from current directory]`));
+    assert.ok(title.includes("Current directory: /workspace/project"));
     assert.deepEqual(selectCalls[0]?.options, [DENY_OPTION, ALLOW_ONCE_OPTION]);
   });
 
@@ -418,29 +418,52 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
     assert.deepEqual(selectCalls, [], "a scan failure must not reach the user prompt");
   });
 
-  it("hard-blocks when the injected normalizer throws, with UI available", async () => {
-    const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions(throwingNormalize) });
-    const { ctx, selectCalls } = createToolCallContext({ select: selectAllowOnce });
+  it("asks instead of silently allowing inputs that only normalize to the current cwd", async () => {
+    const foldingInputs = [
+      ["dot segment", "/workspace/project/."],
+      ["duplicate separators", "//workspace///project"],
+      ["parent segment after a component", "/workspace/project/link/.."],
+    ] as const;
 
-    const result = (await fireToolCall(pi, ctx, subagent("../outside"))) as ToolCallEventResult;
+    for (const [name, input] of foldingInputs) {
+      const pi = createStubPi();
+      createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
+      const approved = createToolCallContext({ select: selectAllowOnce });
 
-    assert.equal(result.block, true);
-    assert.match(result.reason ?? "", /could not be safely evaluated/);
-    assert.match(result.reason ?? "", /normalize exploded/);
-    assert.deepEqual(selectCalls, [], "a deny must not reach the prompt or be overridable");
+      const result = await fireToolCall(pi, approved.ctx, subagent(input));
+
+      assert.equal(result, undefined, `${name}: an explicit Allow once approves the call`);
+      assert.equal(approved.selectCalls.length, 1, `${name}: the call must ask exactly once`);
+      assert.ok(
+        approved.selectCalls[0]?.title.includes(
+          `$["cwd"] = ${JSON.stringify(input)} [ask: differs from current directory]`,
+        ),
+        `${name}: the raw value must be shown as an ask`,
+      );
+    }
   });
 
-  it("hard-blocks when the injected normalizer throws without interactive UI", async () => {
+  it("blocks a folding-equivalent input when the user denies, after asking once", async () => {
     const pi = createStubPi();
-    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions(throwingNormalize) });
-    const { ctx, selectCalls } = createToolCallContext({ hasUI: false, select: selectAllowOnce });
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
+    const { ctx, selectCalls } = createToolCallContext({ select: selectDeny });
 
-    const result = (await fireToolCall(pi, ctx, subagent("../outside"))) as ToolCallEventResult;
+    const result = (await fireToolCall(pi, ctx, subagent("/workspace/project/."))) as ToolCallEventResult;
 
     assert.equal(result.block, true);
-    assert.match(result.reason ?? "", /could not be safely evaluated/);
-    assert.match(result.reason ?? "", /normalize exploded/);
+    assert.match(result.reason ?? "", /not approved/);
+    assert.equal(selectCalls.length, 1, "the ask must prompt exactly once");
+  });
+
+  it("blocks a folding-equivalent input without interactive UI and never prompts", async () => {
+    const pi = createStubPi();
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
+    const { ctx, selectCalls } = createToolCallContext({ hasUI: false, select: selectAllowOnce });
+
+    const result = (await fireToolCall(pi, ctx, subagent("//workspace///project"))) as ToolCallEventResult;
+
+    assert.equal(result.block, true);
+    assert.match(result.reason ?? "", /no interactive UI/);
     assert.deepEqual(selectCalls, []);
   });
 

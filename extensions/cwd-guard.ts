@@ -1,14 +1,14 @@
 /**
  * Per-value `cwd` evaluation and aggregation.
  *
- * A non-empty string `cwd` is allowed only when `normalize(inputCwd) ===
- * normalize(currentCwd)` under an injected `path.normalize`-shaped function;
- * anything else is `ask`. The comparison is purely lexical string equality
- * after Node's lexical normalization: there is no resolve, realpath,
- * containment, case folding, or filesystem access. Empty/missing values are
- * allowed without a call, other types are `ask`. A scan error or an
- * evaluation failure short-circuits into a hard `deny` outcome with a
- * generic error message.
+ * A non-empty string `cwd` is allowed only when the raw value is strictly
+ * equal (`===`) to the current event cwd; anything else is `ask`. Neither
+ * side is preprocessed: strict string equality is the only rule. There is no
+ * resolve, realpath, containment, case folding, separator conversion, trim, or
+ * other preprocessing. Empty/missing values are allowed, other types are
+ * `ask`. A scan error or an evaluation failure short-circuits into a hard
+ * `deny` outcome with a generic error message. String equality does not prove
+ * that the path resolves to the same real directory.
  */
 
 import {
@@ -25,12 +25,6 @@ export type PermissionState = "allow" | "ask" | "deny";
  * fail-closed short circuit for scan/evaluation failures.
  */
 export type EvaluationState = Exclude<PermissionState, "deny">;
-
-/**
- * Synchronous, pure path normalizer, e.g. `path.normalize` for the current
- * platform; tests inject `path.posix.normalize` or `path.win32.normalize`.
- */
-export type NormalizePath = (path: string) => string;
 
 /** One evaluated `cwd` occurrence with its state and short English reason. */
 export interface CwdEvaluation {
@@ -59,16 +53,9 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-/** Evaluate one non-empty string against the current cwd via normalization. */
-function evaluateNonEmptyString(
-  path: string,
-  value: string,
-  currentCwd: string,
-  normalizePath: NormalizePath,
-): CwdEvaluation {
-  const normalizedInput = normalizePath(value);
-  const normalizedCurrent = normalizePath(currentCwd);
-  return normalizedInput === normalizedCurrent
+/** Evaluate one non-empty string against the current cwd by strict equality. */
+function evaluateNonEmptyString(path: string, value: string, currentCwd: string): CwdEvaluation {
+  return value === currentCwd
     ? { path, value, state: "allow", reason: "matches current directory" }
     : { path, value, state: "ask", reason: "differs from current directory" };
 }
@@ -76,25 +63,21 @@ function evaluateNonEmptyString(
 /**
  * Evaluate every `cwd` occurrence of one tool call and merge the states.
  *
- * - Every non-empty string is compared after normalizing both sides with the
- *   same injected function: equal means allow, different means ask. The raw
- *   values are never trimmed or rewritten, and normalization is not cached
- *   across tool calls.
- * - `undefined`, `null`, and `""` are allowed without calling the normalizer.
- * - Any other type is `ask` without calling the normalizer.
- * - A conforming normalizer never throws for string input, so no per-item
- *   guard is needed. As a defensive fallback, any throw from the injected
- *   function discards per-item results and fails the whole call closed to a
- *   hard `deny` (never allow, and no stack trace escapes the guard; the
- *   thrown message is passed through as the outcome error).
+ * - Every non-empty string is compared with the raw current cwd by strict
+ *   equality (`===`): equal means allow, different means ask. Both sides are
+ *   used exactly as given, never trimmed, normalized, or rewritten, and no
+ *   comparison result is cached across tool calls.
+ * - `undefined`, `null`, and `""` are allowed.
+ * - Any other type is `ask`.
+ * - Per-item evaluation is not expected to throw, so no per-item guard is
+ *   needed. As a defensive fallback, any throw discards per-item results and
+ *   fails the whole call closed to a hard `deny` (never allow, and no stack
+ *   trace escapes the guard; the thrown message is passed through as the
+ *   outcome error).
  * - A scan error short-circuits: an incompletely scanned input is hard-denied
  *   without evaluating the collected occurrences.
  */
-export function evaluateCwdOccurrences(
-  input: unknown,
-  currentCwd: string,
-  normalizePath: NormalizePath,
-): CwdEvaluationOutcome {
+export function evaluateCwdOccurrences(input: unknown, currentCwd: string): CwdEvaluationOutcome {
   const scan = collectCwdOccurrences(input);
 
   // Fail-closed short circuit: an incompletely scanned input can never be
@@ -103,14 +86,14 @@ export function evaluateCwdOccurrences(
     return { evaluations: [], aggregate: "deny", error: scan.error.message };
   }
 
-  // Defensive fail-closed net: a conforming `path.normalize` never throws for
-  // string input, but a broken injection must not escape the guard.
+  // Defensive fail-closed net: strict string comparison does not throw, but an
+  // unexpected evaluation failure must not escape the guard.
   let evaluations: CwdEvaluation[];
   try {
     evaluations = scan.occurrences.map((occurrence: CwdOccurrence) => {
       const { path, value } = occurrence;
       if (isNonEmptyString(value)) {
-        return evaluateNonEmptyString(path, value, currentCwd, normalizePath);
+        return evaluateNonEmptyString(path, value, currentCwd);
       }
       if (value === undefined || value === null || value === "") {
         return { path, value, state: "allow", reason: "empty or missing cwd" };

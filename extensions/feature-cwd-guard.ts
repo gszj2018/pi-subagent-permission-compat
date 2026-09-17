@@ -5,10 +5,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
-import {
-  evaluateCwdOccurrences,
-  type NormalizePath,
-} from "./cwd-guard.ts";
+import { evaluateCwdOccurrences } from "./cwd-guard.ts";
 import { matchesInspectedToolName } from "./cwd-ident.ts";
 import {
   promptCwdApproval,
@@ -21,8 +18,6 @@ export type SelectResolver = (ctx: ExtensionContext) => CwdSelect;
 
 /** Options of `createCwdGuardFeature`. Always explicit, no defaults. */
 export interface CwdGuardFeatureOptions {
-  /** Path normalizer used for both sides of the cwd comparison. */
-  normalizePath: NormalizePath;
   /** Resolves the approval selector for the current event context. */
   select: SelectResolver;
 }
@@ -31,8 +26,8 @@ export interface CwdGuardFeatureOptions {
  * Capability 2: subagent tool-call cwd protection.
  *
  * Registers the `tool_call` handler that scans, compares each value with the
- * current event cwd, merges, and (for asks with UI) prompts for one-shot
- * approval.
+ * current event cwd by strict equality, merges, and (for asks with UI) prompts
+ * for one-shot approval.
  */
 export function createCwdGuardFeature(
   pi: ExtensionAPI,
@@ -43,7 +38,7 @@ export function createCwdGuardFeature(
       return undefined;
     }
 
-    const outcome = evaluateCwdOccurrences(event.input, ctx.cwd, options.normalizePath);
+    const outcome = evaluateCwdOccurrences(event.input, ctx.cwd);
 
     if (outcome.aggregate === "allow") {
       return undefined;

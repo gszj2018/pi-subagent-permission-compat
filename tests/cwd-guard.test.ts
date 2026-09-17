@@ -1,25 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import path from "node:path";
 
 import {
   evaluateCwdOccurrences,
   type CwdEvaluationOutcome,
   type EvaluationState,
-  type NormalizePath,
 } from "../extensions/cwd-guard.ts";
-
-const posixNormalize: NormalizePath = (value) => path.posix.normalize(value);
-
-/** A normalizer that throws for one target value; otherwise an identity function. */
-function throwingNormalize(target: string): NormalizePath {
-  return (value) => {
-    if (value === target) {
-      throw new Error("normalizer exploded");
-    }
-    return value;
-  };
-}
 
 /** Expected per-entry payload for `assertOutcome`. */
 type ExpectedEvaluation = { state: EvaluationState; reason: string };
@@ -45,105 +31,144 @@ function assertOutcome(
   assert.equal(outcome.aggregate, expected.aggregate, label);
 }
 
-describe("posix per-value normalization (injected path.posix.normalize)", () => {
+describe("strict raw string equality (POSIX-style samples)", () => {
   const cwd = "/work/project";
 
-  it("allows the same absolute path", () => {
-    const outcome = evaluateCwdOccurrences({ cwd: "/work/project" }, cwd, posixNormalize);
+  it("allows only the exactly equal absolute path", () => {
+    const outcome = evaluateCwdOccurrences({ cwd: "/work/project" }, cwd);
     assertOutcome(outcome, { evaluations: [ALLOW_MATCHES], aggregate: "allow" });
   });
 
-  it("allows both sides with collapsible dot segments and duplicate separators", () => {
-    // Both sides fold to "/work/project" under posix normalization.
-    const outcome = evaluateCwdOccurrences(
-      { cwd: "/work/other/../project", tasks: [{ cwd: "//work///project" }] },
-      "/work/./project",
-      posixNormalize,
-    );
-    assertOutcome(outcome, { evaluations: [ALLOW_MATCHES, ALLOW_MATCHES], aggregate: "allow" });
+  it("asks for dot segments and duplicate separators that only normalize to the same path", () => {
+    for (const input of [
+      "/work/project/.",
+      "/work/project/..",
+      "/work/other/../project",
+      "//work///project",
+    ]) {
+      const outcome = evaluateCwdOccurrences({ cwd: input }, cwd);
+      assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" }, input);
+    }
+  });
+
+  it("does not fold a parent segment that follows a path component", () => {
+    // The raw strings differ, so the call asks. This only proves the string is
+    // not lexically folded, not that any real symlink target is verified.
+    const outcome = evaluateCwdOccurrences({ cwd: "/work/project/link/.." }, cwd);
+    assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" });
+  });
+
+  it("does not preprocess the current directory either", () => {
+    // Canonical input against a non-canonical current cwd: both sides stay raw.
+    for (const current of [
+      "/work/project/.",
+      "/work/other/../project",
+      "//work///project",
+      "/work/project/",
+    ]) {
+      const outcome = evaluateCwdOccurrences({ cwd: "/work/project" }, current);
+      assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" }, current);
+    }
   });
 
   it("asks for subdirectories, parent directories, and unrelated directories", () => {
     for (const input of ["/work/project/sub", "/work", "/other/place"]) {
-      const outcome = evaluateCwdOccurrences({ cwd: input }, cwd, posixNormalize);
+      const outcome = evaluateCwdOccurrences({ cwd: input }, cwd);
       assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" }, input);
     }
   });
 
   it("does not treat dot as the absolute current directory and does not align relative with absolute", () => {
     for (const input of [".", "sub"]) {
-      const outcome = evaluateCwdOccurrences({ cwd: input }, cwd, posixNormalize);
+      const outcome = evaluateCwdOccurrences({ cwd: input }, cwd);
       assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" }, input);
     }
   });
 
   it("asks when only the trailing slash differs", () => {
-    const outcome = evaluateCwdOccurrences({ cwd: "/work/project/" }, cwd, posixNormalize);
+    const outcome = evaluateCwdOccurrences({ cwd: "/work/project/" }, cwd);
     assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" });
   });
 
   it("asks when only the letter case differs", () => {
-    const outcome = evaluateCwdOccurrences({ cwd: "/work/Project" }, cwd, posixNormalize);
+    const outcome = evaluateCwdOccurrences({ cwd: "/work/Project" }, cwd);
     assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" });
   });
 
   it("treats backslashes as plain characters, not separators", () => {
-    const outcome = evaluateCwdOccurrences({ cwd: "/work\\project" }, cwd, posixNormalize);
+    const outcome = evaluateCwdOccurrences({ cwd: "/work\\project" }, cwd);
     assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" });
+  });
+
+  it("allows identical non-canonical strings on both sides", () => {
+    // Equality is the only rule here: no path validity requirement is added.
+    for (const value of ["/work/project/../project", ".", "  ", "//work///project"]) {
+      const outcome = evaluateCwdOccurrences({ cwd: value }, value);
+      assertOutcome(outcome, { evaluations: [ALLOW_MATCHES], aggregate: "allow" }, value);
+    }
   });
 });
 
-describe("win32 per-value normalization (injected path.win32.normalize)", () => {
-  const normalize: NormalizePath = (value) => path.win32.normalize(value);
+describe("strict raw string equality (Windows-style samples)", () => {
   const cwd = "C:\\work\\project";
 
-  it("allows the same drive-absolute path", () => {
-    const outcome = evaluateCwdOccurrences({ cwd: "C:\\work\\project" }, cwd, normalize);
+  it("allows the identical drive-absolute path", () => {
+    const outcome = evaluateCwdOccurrences({ cwd: "C:\\work\\project" }, cwd);
     assertOutcome(outcome, { evaluations: [ALLOW_MATCHES], aggregate: "allow" });
   });
 
-  it("allows mixed slashes and folded dot segments on both sides", () => {
-    // Forward slashes fold to backslashes; dot segments collapse on both sides.
-    const outcome = evaluateCwdOccurrences(
-      { cwd: "C:/work/project", tasks: [{ cwd: "C:\\work\\other\\..\\project\\." }] },
+  it("asks when only forward and back slashes differ", () => {
+    const outcome = evaluateCwdOccurrences({ cwd: "C:/work/project" }, cwd);
+    assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" });
+  });
+
+  it("asks for dot segments and duplicate separators that only normalize to the same path", () => {
+    for (const input of [
       "C:\\work\\project\\.",
-      normalize,
-    );
-    assertOutcome(outcome, { evaluations: [ALLOW_MATCHES, ALLOW_MATCHES], aggregate: "allow" });
+      "C:\\work\\other\\..\\project",
+      "C:\\\\work\\\\\\project",
+    ]) {
+      const outcome = evaluateCwdOccurrences({ cwd: input }, cwd);
+      assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" }, input);
+    }
   });
 
   it("asks for a different drive, a subdirectory, and dot against an absolute cwd", () => {
     for (const input of ["D:\\work\\project", "C:\\work\\project\\sub", "."]) {
-      const outcome = evaluateCwdOccurrences({ cwd: input }, cwd, normalize);
+      const outcome = evaluateCwdOccurrences({ cwd: input }, cwd);
       assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" }, input);
     }
   });
 
   it("does not align a drive-relative path with a drive-absolute path", () => {
-    const outcome = evaluateCwdOccurrences({ cwd: "C:project" }, cwd, normalize);
+    const outcome = evaluateCwdOccurrences({ cwd: "C:project" }, cwd);
     assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" });
   });
 
   it("asks when the drive letter or a directory name differs only in case", () => {
     for (const input of ["c:\\work\\project", "C:\\Work\\project"]) {
-      const outcome = evaluateCwdOccurrences({ cwd: input }, cwd, normalize);
+      const outcome = evaluateCwdOccurrences({ cwd: input }, cwd);
       assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" }, input);
     }
   });
 
   it("asks when only the trailing backslash differs", () => {
-    const outcome = evaluateCwdOccurrences({ cwd: "C:\\work\\project\\" }, cwd, normalize);
+    const outcome = evaluateCwdOccurrences({ cwd: "C:\\work\\project\\" }, cwd);
     assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" });
   });
 
-  it("handles UNC paths by normalized equality only", () => {
+  it("handles UNC paths by strict equality only", () => {
     const uncCwd = "\\\\server\\share\\dir";
     assertOutcome(
-      evaluateCwdOccurrences({ cwd: "\\\\server\\share\\dir" }, uncCwd, normalize),
+      evaluateCwdOccurrences({ cwd: "\\\\server\\share\\dir" }, uncCwd),
       { evaluations: [ALLOW_MATCHES], aggregate: "allow" },
     );
     assertOutcome(
-      evaluateCwdOccurrences({ cwd: "\\\\server\\share\\other" }, uncCwd, normalize),
+      evaluateCwdOccurrences({ cwd: "\\\\server\\share\\other" }, uncCwd),
+      { evaluations: [ASK_DIFFERS], aggregate: "ask" },
+    );
+    assertOutcome(
+      evaluateCwdOccurrences({ cwd: "//server/share/dir" }, uncCwd),
       { evaluations: [ASK_DIFFERS], aggregate: "ask" },
     );
   });
@@ -153,21 +178,20 @@ describe("platform-independent value handling", () => {
   const cwd = "/work/project";
 
   it("does not trim or rewrite raw strings: whitespace-only values differ", () => {
-    const outcome = evaluateCwdOccurrences({ cwd: "  " }, cwd, posixNormalize);
+    const outcome = evaluateCwdOccurrences({ cwd: "  " }, cwd);
     assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" });
     assert.equal(outcome.evaluations[0]?.value, "  ");
   });
 
-  it("allows only values that are truly equal after normalization", () => {
-    // "/work/project" is the only raw value that stays equal after normalize.
-    for (const nearMiss of ["/work/projects", "/work/project/", " /work/project"]) {
-      const outcome = evaluateCwdOccurrences({ cwd: nearMiss }, cwd, posixNormalize);
+  it("allows only the exactly equal raw string", () => {
+    for (const nearMiss of ["/work/projects", "/work/project/", " /work/project", "/work/project "]) {
+      const outcome = evaluateCwdOccurrences({ cwd: nearMiss }, cwd);
       assertOutcome(outcome, { evaluations: [ASK_DIFFERS], aggregate: "ask" }, nearMiss);
     }
   });
 
   it("preserves original values and field paths in the evaluations", () => {
-    const outcome = evaluateCwdOccurrences({ cwd: "  ", tasks: [{ cwd: "/other" }] }, cwd, posixNormalize);
+    const outcome = evaluateCwdOccurrences({ cwd: "  ", tasks: [{ cwd: "/other" }] }, cwd);
     assert.equal(outcome.evaluations.length, 2);
     assert.deepEqual(
       outcome.evaluations.map((e) => ({ path: e.path, value: e.value, state: e.state, reason: e.reason })),
@@ -185,7 +209,6 @@ describe("empty, missing, and non-string values", () => {
     const outcome = evaluateCwdOccurrences(
       { cwd: undefined, a: { cwd: null }, b: { cwd: "" } },
       "/w",
-      posixNormalize,
     );
     assert.equal(outcome.evaluations.length, 3);
     assert.deepEqual(
@@ -200,14 +223,14 @@ describe("empty, missing, and non-string values", () => {
   });
 
   it("allows a call with no cwd occurrences at all", () => {
-    const outcome = evaluateCwdOccurrences({ prompt: "no cwd here" }, "/w", posixNormalize);
+    const outcome = evaluateCwdOccurrences({ prompt: "no cwd here" }, "/w");
     assert.deepEqual(outcome.evaluations, []);
     assert.equal(outcome.aggregate, "allow");
   });
 
   it("asks for non-string types; cwd objects and arrays stay leaves", () => {
     const input = { cwd: 42, a: { cwd: true }, b: { cwd: { cwd: "../inner" } }, c: { cwd: ["../a"] } };
-    const outcome = evaluateCwdOccurrences(input, "/w", posixNormalize);
+    const outcome = evaluateCwdOccurrences(input, "/w");
 
     assert.equal(outcome.evaluations.length, 4);
     // No occurrence from inside the cwd object or array: leaf handling kept.
@@ -233,40 +256,17 @@ describe("no caching across calls", () => {
   it("changing the current cwd between calls flips the same input from allow to ask", () => {
     const input = { cwd: "/work/project" };
 
-    const withSame = evaluateCwdOccurrences(input, "/work/project", posixNormalize);
+    const withSame = evaluateCwdOccurrences(input, "/work/project");
     assertOutcome(withSame, { evaluations: [ALLOW_MATCHES], aggregate: "allow" });
 
-    const withChanged = evaluateCwdOccurrences(input, "/elsewhere", posixNormalize);
+    const withChanged = evaluateCwdOccurrences(input, "/elsewhere");
     assertOutcome(withChanged, { evaluations: [ASK_DIFFERS], aggregate: "ask" });
   });
 });
 
-describe("defensive failure handling", () => {
-  it("fails closed to deny when the normalizer throws for the input value", () => {
-    const outcome = evaluateCwdOccurrences(
-      { first: { cwd: "../throw" }, second: { cwd: "../b" }, empty: { cwd: "" } },
-      "/w",
-      throwingNormalize("../throw"),
-    );
-
-    // Per-item results are discarded; the failure is a hard deny.
-    assert.deepEqual(outcome.evaluations, []);
-    assert.equal(outcome.aggregate, "deny");
-    assert.match(outcome.error ?? "", /normalizer exploded/);
-  });
-
-  it("fails closed to deny when the normalizer throws for the current cwd", () => {
-    const outcome = evaluateCwdOccurrences(
-      { first: { cwd: "../a" } },
-      "/hostile-cwd",
-      throwingNormalize("/hostile-cwd"),
-    );
-
-    assert.deepEqual(outcome.evaluations, []);
-    assert.equal(outcome.aggregate, "deny");
-    assert.match(outcome.error ?? "", /normalizer exploded/);
-  });
-});
+// The guard keeps a defensive fail-closed catch for unexpected evaluation
+// failures. Strict string comparison cannot throw from the public contract, so
+// the catch is intentionally not fault-injected or tested from here.
 
 describe("strict merge", () => {
   const cwd = "/work/project";
@@ -287,7 +287,7 @@ describe("strict merge", () => {
       testCase.inputs.forEach((value, index) => {
         input[`item${index}`] = { cwd: value };
       });
-      const outcome = evaluateCwdOccurrences(input, cwd, posixNormalize);
+      const outcome = evaluateCwdOccurrences(input, cwd);
       const expectedEvaluations = testCase.expectedStates.map((state) =>
         state === "allow" ? ALLOW_MATCHES : ASK_DIFFERS,
       );
@@ -300,7 +300,7 @@ describe("strict merge", () => {
   });
 
   it("returns allow for an empty occurrence set", () => {
-    const outcome = evaluateCwdOccurrences({ prompt: "no cwd here" }, cwd, posixNormalize);
+    const outcome = evaluateCwdOccurrences({ prompt: "no cwd here" }, cwd);
     assert.deepEqual(outcome.evaluations, []);
     assert.equal(outcome.aggregate, "allow");
   });
@@ -325,7 +325,7 @@ describe("scan errors short-circuit to a hard deny", () => {
   }
 
   it("denies without evaluating the collected occurrences", () => {
-    const outcome = evaluateCwdOccurrences(hostileInput(), cwd, posixNormalize);
+    const outcome = evaluateCwdOccurrences(hostileInput(), cwd);
     assert.ok(outcome.error);
     assert.match(outcome.error, /\$\["nested"]/);
     assert.match(outcome.error, /not a plain JSON object or array/);
@@ -342,7 +342,7 @@ describe("scan errors short-circuit to a hard deny", () => {
         throw new Error("scan exploded");
       },
     });
-    const outcome = evaluateCwdOccurrences(input, cwd, posixNormalize);
+    const outcome = evaluateCwdOccurrences(input, cwd);
     assert.ok(outcome.error);
     assert.deepEqual(outcome.evaluations, []);
     assert.equal(outcome.aggregate, "deny");
@@ -353,7 +353,7 @@ describe("scan errors short-circuit to a hard deny", () => {
     for (let index = 0; index < 12; index++) {
       deep = { nested: deep };
     }
-    const outcome = evaluateCwdOccurrences(deep, cwd, posixNormalize);
+    const outcome = evaluateCwdOccurrences(deep, cwd);
     assert.ok(outcome.error);
     assert.match(outcome.error, /maximum scan depth/);
     assert.deepEqual(outcome.evaluations, []);
@@ -368,7 +368,7 @@ describe("safety invariants", () => {
       tasks: Object.freeze([Object.freeze({ cwd: "../b" })]),
     });
 
-    const outcome = evaluateCwdOccurrences(input, "/work/project", posixNormalize);
+    const outcome = evaluateCwdOccurrences(input, "/work/project");
 
     assert.ok(Object.isFrozen(input));
     assert.ok(Object.isFrozen(input.tasks));

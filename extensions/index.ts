@@ -7,7 +7,6 @@
  * and never touches a UI.
  */
 
-import { normalize } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   createCwdGuardFeature,
@@ -31,14 +30,13 @@ export function createSubagentPermissionCompatExtension(
   options: ExtensionOptions,
 ): void {
   createParentSessionEnvFeature(pi, { env: options.env });
-  createCwdGuardFeature(pi, { normalizePath: options.normalizePath, select: options.select });
+  createCwdGuardFeature(pi, { select: options.select });
 }
 
 /** Default extension factory expected by the Pi extension loader. */
 export default function createExtension(pi: ExtensionAPI): void {
   createSubagentPermissionCompatExtension(pi, {
     env: process.env,
-    normalizePath: normalize,
     select: (ctx) => (title, options, opts) => ctx.ui.select(title, options, opts),
   });
 }
