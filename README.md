@@ -2,7 +2,7 @@
 
 English | [简体中文](./README.zh-CN.md)
 
-A [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent) compatibility patch package for third-party subagent extensions. It provides two independent capabilities:
+A [Pi Coding Agent](https://github.com/earendil-works/pi) compatibility patch package for third-party subagent extensions. It provides two independent capabilities:
 
 1. **Parent-session environment compatibility** — publishes `PI_SUBAGENT_PARENT_SESSION` for root Pi processes, so subagent child processes that inherit the environment can route their permission asks back to the parent session.
 2. **Subagent cwd guard** — reviews the `cwd` values in subagent tool-call input and asks for a one-shot approval whenever a value does not match the current working directory.
