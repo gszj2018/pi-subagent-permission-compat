@@ -1,5 +1,5 @@
 /**
- * Subagent tool identification and complete `cwd` collection.
+ * Complete `cwd` collection from subagent tool calls.
  *
  * This module only reads tool-call input; it never touches the permission
  * system, the UI, or the environment. Collection is a bounded recursive
@@ -12,18 +12,6 @@
 import { types } from "node:util";
 
 import { describeUnknown, describeError } from "./diagnostics.ts";
-
-/**
- * Tool-name pattern for the calls this extension inspects. Intentionally
- * loose: no word boundaries, no `g` flag, no dependency on third-party
- * schemas or fixed tool lists.
- */
-export const INSPECTED_TOOL_NAME_PATTERN = /(subagent|delegate|spawn|agent)/i;
-
-/** Whether a `tool_call` with this tool name should be inspected. */
-export function matchesInspectedToolName(toolName: unknown): boolean {
-  return typeof toolName === "string" && INSPECTED_TOOL_NAME_PATTERN.test(toolName);
-}
 
 /** One discovered `cwd` field: unambiguous path plus the untouched raw value. */
 export interface CwdOccurrence {

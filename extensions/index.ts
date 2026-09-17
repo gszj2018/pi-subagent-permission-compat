@@ -29,12 +29,12 @@ import {
   promptCwdApproval,
   type CwdSelect,
 } from "./cwd-prompt.ts";
-import { matchesInspectedToolName } from "./cwd-inspection.ts";
 import {
   PARENT_SESSION_ENV_VAR,
   ParentSessionEnvController,
   type SubagentEnv,
 } from "./parent-session-env.ts";
+import { matchesInspectedToolName } from "./cwd-ident.ts";
 
 /** Resolves the select implementation for the current event context. */
 export type SelectResolver = (ctx: ExtensionContext) => CwdSelect;
