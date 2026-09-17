@@ -1,11 +1,15 @@
 /**
- * Safe display and select-based approval for subagent `cwd` asks.
+ * Display and select-based approval for subagent `cwd` asks.
  *
- * Tool-input cwd values use JSON-quoted / single-line JSON display, so control
- * characters in those values cannot forge prompt lines. The current directory
- * from the host context is displayed verbatim. Approval is granted only for the
- * exact `Allow once` response and only for the current tool call; nothing is
- * persisted into the permission system.
+ * A non-empty cwd string without whitespace or ASCII control characters is
+ * displayed verbatim. Every other value falls back to the single-line JSON
+ * display of `describeUnknown`, so the common whitespace and control characters
+ * cannot forge prompt lines; that fallback does not turn every whitespace or
+ * DEL character into a visible escape. The empty string keeps its `""` quoting
+ * so the value position is never blank. The current directory from the host
+ * context is always displayed verbatim. Approval is granted only for the exact
+ * `Allow once` response and only for the current tool call; nothing is persisted
+ * into the permission system.
  */
 
 import type { CwdEvaluation } from "./cwd-guard.ts";
@@ -42,8 +46,16 @@ export type CwdPromptOutcome =
       detail?: string;
     };
 
-/** Safe single-line display of one raw `cwd` value. */
+/**
+ * Display one raw `cwd` value: a non-empty string without whitespace (`\s`),
+ * U+0085, ASCII control characters (U+0000-U+001F) or DEL (U+007F) is shown
+ * verbatim; everything else - including the empty string - uses the safe
+ * single-line JSON display of `describeUnknown`.
+ */
 export function formatCwdValue(value: unknown): string {
+  if (typeof value === "string" && value !== "" && !/[\s\u0085\x00-\x1F\x7F]/.test(value)) {
+    return value;
+  }
   return describeUnknown(value);
 }
 

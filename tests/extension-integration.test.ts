@@ -327,11 +327,45 @@ describe("tool_call cwd protection (strict equality and injected select)", () =>
     assert.match(title, /^\[pi-subagent-permission-compat] /);
     // The exactly equal value allows; the folding-equivalent value must ask
     // instead of being silently allowed.
-    assert.ok(title.includes(`$["cwd"] = "/workspace/project" [allow: matches current directory]`));
-    assert.ok(title.includes(`$["tasks"][0]["cwd"] = "/workspace/project/." [ask: differs from current directory]`));
-    assert.ok(title.includes(`$["tasks"][1]["cwd"] = "../shared" [ask: differs from current directory]`));
+    assert.ok(title.includes(`$["cwd"] = /workspace/project [allow: matches current directory]`));
+    assert.ok(title.includes(`$["tasks"][0]["cwd"] = /workspace/project/. [ask: differs from current directory]`));
+    assert.ok(title.includes(`$["tasks"][1]["cwd"] = ../shared [ask: differs from current directory]`));
     assert.ok(title.includes("Current directory: /workspace/project"));
     assert.deepEqual(selectCalls[0]?.options, [DENY_OPTION, ALLOW_ONCE_OPTION]);
+  });
+
+  it("shows verbatim and JSON cwd values line by line in a single prompt", async () => {
+    const pi = createStubPi();
+    createSubagentPermissionCompatExtension(pi.api, { env: {}, ...baseOptions() });
+    const { ctx, selectCalls } = createToolCallContext({ cwd: CWD_WIN32, select: selectAllowOnce });
+
+    // One call mixing a byte-identical path, a path with a plain space, values
+    // holding a real line feed and an ANSI escape, and the empty string.
+    const input = {
+      cwd: CWD_WIN32,
+      tasks: [
+        { cwd: "C:\\workspace\\my project" },
+        { cwd: "line1\n[allow] line2" },
+        { cwd: "\u001b[31mred" },
+        { cwd: "" },
+      ],
+    };
+
+    const result = await fireToolCall(pi, ctx, { toolName: "subagent", input });
+
+    assert.equal(result, undefined, "an exact Allow once approves the call");
+    assert.equal(selectCalls.length, 1, "the mixed call prompts exactly once");
+    const lines = (selectCalls[0]?.title ?? "").split("\n");
+    assert.equal(lines.length, 9, "a line feed inside a value must not add prompt lines");
+    assert.equal(lines[0], "[pi-subagent-permission-compat] Review subagent working directories");
+    assert.equal(lines[1], "Tool: subagent");
+    assert.equal(lines[2], `Current directory: ${CWD_WIN32}`);
+    assert.equal(lines[3], `$["cwd"] = ${CWD_WIN32} [allow: matches current directory]`);
+    assert.equal(lines[4], `$["tasks"][0]["cwd"] = "C:\\\\workspace\\\\my project" [ask: differs from current directory]`);
+    assert.equal(lines[5], `$["tasks"][1]["cwd"] = "line1\\n[allow] line2" [ask: differs from current directory]`);
+    assert.equal(lines[6], `$["tasks"][2]["cwd"] = "\\u001b[31mred" [ask: differs from current directory]`);
+    assert.equal(lines[7], `$["tasks"][3]["cwd"] = "" [allow: empty or missing cwd]`);
+    assert.equal(lines[8], "Allow this tool call once?");
   });
 
   it("blocks on Deny, cancellation, and unknown responses", async () => {
@@ -435,9 +469,7 @@ describe("tool_call cwd protection (strict equality and injected select)", () =>
       assert.equal(result, undefined, `${name}: an explicit Allow once approves the call`);
       assert.equal(approved.selectCalls.length, 1, `${name}: the call must ask exactly once`);
       assert.ok(
-        approved.selectCalls[0]?.title.includes(
-          `$["cwd"] = ${JSON.stringify(input)} [ask: differs from current directory]`,
-        ),
+        approved.selectCalls[0]?.title.includes(`$["cwd"] = ${input} [ask: differs from current directory]`),
         `${name}: the raw value must be shown as an ask`,
       );
     }

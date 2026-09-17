@@ -42,30 +42,151 @@ const CONTEXT_BASE = {
   signal: undefined,
 };
 
+/** Every character that must never be displayed verbatim. */
+const WHITESPACE_CASES: readonly (readonly [string, string])[] = [
+  ["space", " "],
+  ["tab", "\t"],
+  ["line feed", "\n"],
+  ["vertical tab", "\v"],
+  ["form feed", "\f"],
+  ["carriage return", "\r"],
+  ["NEXT LINE (U+0085)", "\u0085"],
+  ["NO-BREAK SPACE (U+00A0)", "\u00A0"],
+  ["OGHAM SPACE MARK (U+1680)", "\u1680"],
+  ["EN QUAD (U+2000)", "\u2000"],
+  ["EM QUAD (U+2001)", "\u2001"],
+  ["EN SPACE (U+2002)", "\u2002"],
+  ["EM SPACE (U+2003)", "\u2003"],
+  ["THREE-PER-EM SPACE (U+2004)", "\u2004"],
+  ["FOUR-PER-EM SPACE (U+2005)", "\u2005"],
+  ["SIX-PER-EM SPACE (U+2006)", "\u2006"],
+  ["FIGURE SPACE (U+2007)", "\u2007"],
+  ["PUNCTUATION SPACE (U+2008)", "\u2008"],
+  ["THIN SPACE (U+2009)", "\u2009"],
+  ["HAIR SPACE (U+200A)", "\u200A"],
+  ["LINE SEPARATOR (U+2028)", "\u2028"],
+  ["PARAGRAPH SEPARATOR (U+2029)", "\u2029"],
+  ["NARROW NO-BREAK SPACE (U+202F)", "\u202F"],
+  ["MEDIUM MATHEMATICAL SPACE (U+205F)", "\u205F"],
+  ["IDEOGRAPHIC SPACE (U+3000)", "\u3000"],
+  ["ZERO WIDTH NO-BREAK SPACE (U+FEFF)", "\uFEFF"],
+];
+
 describe("value and line formatting", () => {
-  it("JSON-quotes strings, keeping whitespace and escaping control characters", () => {
-    assert.equal(formatCwdValue("plain"), '"plain"');
-    assert.equal(formatCwdValue("  padded  "), '"  padded  "');
-    assert.equal(formatCwdValue("line1\n[allow]\nline2"), '"line1\\n[allow]\\nline2"');
-    assert.equal(formatCwdValue("\u001b[31mred"), '"\\u001b[31mred"');
+  it("shows directly readable strings verbatim without JSON quoting or escaping", () => {
+    const verbatimValues = [
+      "plain",
+      "/workspace/project",
+      "../shared",
+      "./here",
+      "C:\\workspace\\project",
+      "\\\\server\\share\\project",
+      "中文目录/子目录",
+      'a"b',
+      "C:\\dir\\a\"b",
+      "\\n",
+      ".",
+      "-",
+    ];
+
+    for (const value of verbatimValues) {
+      const formatted = formatCwdValue(value);
+      assert.equal(formatted, value, `verbatim display: ${value}`);
+      assert.ok(!formatted.startsWith('"'), `no JSON outer quote: ${value}`);
+      assert.ok(!formatted.endsWith('"'), `no JSON outer quote: ${value}`);
+      assert.equal(formatCwdValue(value), formatted, `repeated calls are stable: ${value}`);
+    }
   });
 
-  it("shows empty and non-JSON values with type markers", () => {
+  it("distinguishes a literal backslash-n from a real line feed", () => {
+    assert.equal(formatCwdValue("\\n"), "\\n", "a literal backslash-n is readable verbatim");
+    assert.equal(formatCwdValue("\n"), '"\\n"', "a real line feed stays JSON-escaped");
+  });
+
+  it("keeps the empty string quoted and falls back to JSON for whitespace values", () => {
+    assert.equal(formatCwdValue(""), '""');
+    assert.equal(formatCwdValue("  padded  "), '"  padded  "');
+    assert.equal(formatCwdValue(" leading"), '" leading"');
+    assert.equal(formatCwdValue("trailing "), '"trailing "');
+    assert.equal(formatCwdValue("inner space"), '"inner space"');
+  });
+
+  it("falls back to JSON display for every whitespace character and U+0085", () => {
+    for (const [name, whitespace] of WHITESPACE_CASES) {
+      // Expectations come from JSON.stringify, never from the pattern under test.
+      const value = `before${whitespace}after`;
+      assert.equal(formatCwdValue(value), JSON.stringify(value), name);
+      assert.equal(formatCwdValue(whitespace), JSON.stringify(whitespace), name);
+      assert.notEqual(formatCwdValue(whitespace), whitespace, name);
+    }
+
+    // Representative fixed expectations, independent of JSON.stringify choices.
+    assert.equal(formatCwdValue("line\nfeed"), '"line\\nfeed"');
+    assert.equal(formatCwdValue("tab\there"), '"tab\\there"');
+    assert.equal(formatCwdValue("nbsp\u00A0here"), '"nbsp\u00A0here"');
+  });
+
+  it("falls back to JSON display for every C0 control character and DEL", () => {
+    for (let code = 0x00; code <= 0x1f; code += 1) {
+      const control = String.fromCharCode(code);
+      const value = `a${control}b`;
+      const label = `U+${code.toString(16).padStart(4, "0").toUpperCase()}`;
+      assert.equal(formatCwdValue(value), JSON.stringify(value), label);
+      assert.notEqual(formatCwdValue(value), value, label);
+    }
+
+    // JSON.stringify does not escape DEL: the output is quoted but still holds
+    // the raw character, which this contract accepts.
+    assert.equal(formatCwdValue("a\u007Fb"), '"a\u007Fb"');
+    assert.ok(formatCwdValue("a\u007Fb").includes("\u007F"), "the raw DEL character stays inside the quotes");
+  });
+
+  it("cannot forge prompt lines with ANSI escapes or line feeds", () => {
+    assert.equal(formatCwdValue("\u001b[31mred"), '"\\u001b[31mred"');
+    const forged = formatCwdValue("line1\n[allow] line2");
+    assert.equal(forged, '"line1\\n[allow] line2"');
+    assert.equal(forged.split("\n").length, 1);
+  });
+
+  it("keeps JSON, type-marker, and placeholder display for non-string values", () => {
     assert.equal(formatCwdValue(undefined), "[undefined]");
+    assert.equal(formatCwdValue(null), "null");
+    assert.equal(formatCwdValue(42), "42");
+    assert.equal(formatCwdValue(true), "true");
     assert.equal(formatCwdValue({ path: "../other" }), '{"path":"../other"}');
     assert.equal(formatCwdValue(["../a"]), '["../a"]');
-    assert.equal(formatCwdValue(42), "42");
     assert.equal(formatCwdValue(Symbol("s")), "[symbol]");
+    assert.equal(formatCwdValue(() => undefined), "[function]");
+    assert.equal(formatCwdValue(10n), "[unserializable value]");
+  });
+
+  it("keeps JSON quoting for plain strings nested in objects and arrays", () => {
+    assert.equal(formatCwdValue({ cwd: "plain" }), '{"cwd":"plain"}');
+    assert.equal(formatCwdValue(["plain"]), '["plain"]');
+  });
+
+  it("degrades circular values to a placeholder instead of throwing", () => {
+    const circular: Record<string, unknown> = {};
+    circular["self"] = circular;
+    assert.equal(formatCwdValue(circular), "[unserializable value]");
   });
 
   it("renders evaluation lines with path, safe value, state, and non-empty reason", () => {
     assert.equal(
       formatCwdEvaluation(evaluation()),
-      `$["cwd"] = "../outside" [ask: differs from current directory]`,
+      `$["cwd"] = ../outside [ask: differs from current directory]`,
     );
     assert.equal(
       formatCwdEvaluation(evaluation({ state: "allow", reason: "empty or missing cwd" })),
-      `$["cwd"] = "../outside" [allow: empty or missing cwd]`,
+      `$["cwd"] = ../outside [allow: empty or missing cwd]`,
+    );
+    assert.equal(
+      formatCwdEvaluation(evaluation({ value: "", state: "allow", reason: "empty or missing cwd" })),
+      `$["cwd"] = "" [allow: empty or missing cwd]`,
+    );
+    assert.equal(
+      formatCwdEvaluation(evaluation({ value: "../padded value" })),
+      `$["cwd"] = "../padded value" [ask: differs from current directory]`,
     );
     assert.equal(
       formatCwdEvaluation(evaluation({ value: { path: "../o" }, reason: "invalid cwd type: {\"path\":\"../o\"}" })),
@@ -74,12 +195,12 @@ describe("value and line formatting", () => {
     // Multi-line reasons are flattened to one line.
     assert.equal(
       formatCwdEvaluation(evaluation({ reason: "differs from current\ndirectory next\tline" })),
-      `$["cwd"] = "../outside" [ask: differs from current directory next line]`,
+      `$["cwd"] = ../outside [ask: differs from current directory next line]`,
     );
     // An empty reason shows the bare state without a suffix.
     assert.equal(
       formatCwdEvaluation(evaluation({ reason: "" })),
-      `$["cwd"] = "../outside" [ask]`,
+      `$["cwd"] = ../outside [ask]`,
     );
   });
 });
@@ -96,6 +217,12 @@ describe("prompt title", () => {
       }),
       evaluation({
         path: `$["tasks"][1]["cwd"]`,
+        value: " /shared ",
+        state: "ask",
+        reason: "differs from current directory",
+      }),
+      evaluation({
+        path: `$["tasks"][2]["cwd"]`,
         value: { path: "../other" },
         state: "ask",
         reason: "invalid cwd type",
@@ -107,9 +234,10 @@ describe("prompt title", () => {
     assert.equal(lines[1], "Tool: subagent");
     assert.equal(lines[2], "Current directory: /workspace/project");
     assert.equal(lines[3], `$["cwd"] = "" [allow: empty or missing cwd]`);
-    assert.equal(lines[4], `$["tasks"][0]["cwd"] = "../shared" [ask: differs from current directory]`);
-    assert.equal(lines[5], `$["tasks"][1]["cwd"] = {"path":"../other"} [ask: invalid cwd type]`);
-    assert.equal(lines[6], "Allow this tool call once?");
+    assert.equal(lines[4], `$["tasks"][0]["cwd"] = ../shared [ask: differs from current directory]`);
+    assert.equal(lines[5], `$["tasks"][1]["cwd"] = " /shared " [ask: differs from current directory]`);
+    assert.equal(lines[6], `$["tasks"][2]["cwd"] = {"path":"../other"} [ask: invalid cwd type]`);
+    assert.equal(lines[7], "Allow this tool call once?");
   });
 
   it("displays the current directory verbatim without JSON quoting or escaping", () => {
@@ -122,9 +250,11 @@ describe("prompt title", () => {
   it("does not omit any cwd item and never appends extra fragments via values", () => {
     const title = buildCwdPromptTitle("spawn", "/w", [
       evaluation({ value: "../x\n[deny]\nInject" }),
+      evaluation({ path: `$["tasks"][0]["cwd"]`, value: "../plain" }),
     ]);
     assert.ok(title.includes('"../x\\n[deny]\\nInject"'));
-    assert.equal(title.split("\n").length, 5);
+    assert.ok(title.includes(`$["tasks"][0]["cwd"] = ../plain [ask: differs from current directory]`));
+    assert.equal(title.split("\n").length, 6);
   });
 });
 
@@ -215,7 +345,13 @@ describe("promptCwdApproval", () => {
         state: "ask",
         reason: "differs from current directory",
       }),
-      evaluation({ path: `$["tasks"][1]["cwd"]`, value: "", state: "allow", reason: "empty or missing cwd" }),
+      evaluation({
+        path: `$["tasks"][1]["cwd"]`,
+        value: " /w ",
+        state: "ask",
+        reason: "differs from current directory",
+      }),
+      evaluation({ path: `$["tasks"][2]["cwd"]`, value: "", state: "allow", reason: "empty or missing cwd" }),
     ];
 
     const outcome = await promptCwdApproval(
@@ -224,7 +360,11 @@ describe("promptCwdApproval", () => {
     );
 
     assert.equal(stub.calls.length, 1);
-    assert.ok(stub.calls[0]?.title.includes(`$["tasks"][0]["cwd"] = "../b" [ask: differs from current directory]`));
+    const title = stub.calls[0]?.title ?? "";
+    assert.ok(title.includes(`$["cwd"] = /w [allow: matches current directory]`));
+    assert.ok(title.includes(`$["tasks"][0]["cwd"] = ../b [ask: differs from current directory]`));
+    assert.ok(title.includes(`$["tasks"][1]["cwd"] = " /w " [ask: differs from current directory]`));
+    assert.ok(title.includes(`$["tasks"][2]["cwd"] = "" [allow: empty or missing cwd]`));
     assert.deepEqual(outcome, { approved: true });
   });
 });
