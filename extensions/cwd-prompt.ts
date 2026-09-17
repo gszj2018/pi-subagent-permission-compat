@@ -10,9 +10,7 @@
 
 import type { CwdEvaluation } from "./cwd-guard.ts";
 import { describeError, describeUnknown } from "./diagnostics.ts";
-
-/** Label prefixed to prompts and blocking reasons. */
-export const EXTENSION_PROMPT_LABEL = "[pi-subagent-permission-compat]";
+import { EXTENSION_LABEL } from "./extension-meta.ts";
 
 /** Options are English; the denying option comes first. */
 export const DENY_OPTION = "Deny";
@@ -63,7 +61,7 @@ export function buildCwdPromptTitle(
   evaluations: CwdEvaluation[],
 ): string {
   const lines = [
-    `${EXTENSION_PROMPT_LABEL} Review subagent working directories`,
+    `${EXTENSION_LABEL} Review subagent working directories`,
     `Tool: ${toolName}`,
     `Current directory: ${currentCwd}`,
     ...evaluations.map(formatCwdEvaluation),

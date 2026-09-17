@@ -11,12 +11,14 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import createExtension, {
-  createCwdGuardFeature,
-  createParentSessionEnvFeature,
   createSubagentPermissionCompatExtension,
   type ExtensionOptions,
-  type SelectResolver,
 } from "../extensions/index.ts";
+import {
+  createCwdGuardFeature,
+  type SelectResolver,
+} from "../extensions/feature-cwd-guard.ts";
+import { createParentSessionEnvFeature } from "../extensions/feature-parent-session.ts";
 import {
   PARENT_SESSION_ENV_VAR,
   type SubagentEnv,
@@ -264,7 +266,7 @@ describe("minimal lifecycle through the event host (injected env)", () => {
     assert.equal(env[PARENT_SESSION_ENV_VAR], undefined);
     assert.equal(notifications.length, 1);
     assert.equal(notifications[0]?.type, "warning");
-    assert.match(notifications[0]?.message ?? "", /pi-subagent-permission-compat/);
+    assert.match(notifications[0]?.message ?? "", /^\[pi-subagent-permission-compat] /);
     assert.match(notifications[0]?.message ?? "", /PI_SUBAGENT_PARENT_SESSION/);
   });
 });
@@ -325,6 +327,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
 
     assert.equal(result, undefined);
     assert.equal(selectCalls.length, 1, "multi-cwd calls must prompt exactly once");
+    assert.match(selectCalls[0]?.title ?? "", /^\[pi-subagent-permission-compat] /);
     assert.ok(selectCalls[0]?.title.includes(`$["cwd"] = "../shared" [ask: differs from current directory]`));
     assert.ok(selectCalls[0]?.title.includes(`$["tasks"][0]["cwd"] = "/workspace/project" [allow: matches current directory]`));
     assert.ok(selectCalls[0]?.title.includes("Current directory: /workspace/project"));
@@ -345,7 +348,7 @@ describe("tool_call cwd protection (injected normalizePath and select)", () => {
 
       assert.equal(result.block, true, name);
       assert.match(result.reason ?? "", expectedFragment);
-      assert.match(result.reason ?? "", /^\[pi-subagent-permission-compat]/);
+      assert.match(result.reason ?? "", /^\[pi-subagent-permission-compat] /);
     }
   });
 
